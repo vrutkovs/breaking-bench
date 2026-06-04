@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import tempfile
@@ -19,7 +20,8 @@ import streamlit as st
 # Constants
 # ---------------------------------------------------------------------------
 
-K6_IMAGE = "quay.io/vrutkovs/k6-with-prw-extension:v2.0.0"
+# K6_IMAGE = "quay.io/vrutkovs/k6-with-prw-extension:v2.0.0"
+K6_IMAGE = "docker.io/grafana/k6:1.7.1"
 K6_INSERT_CONTAINER = "breaking-bench-k6-insert"
 K6_SELECT_CONTAINER = "breaking-bench-k6-select"
 K6_INSERT_PORT = 6565
@@ -27,6 +29,19 @@ K6_SELECT_PORT = 6566
 K6_INSERT_API = f"http://localhost:{K6_INSERT_PORT}/v1"
 K6_SELECT_API = f"http://localhost:{K6_SELECT_PORT}/v1"
 LOG_MAXLEN = 300
+VUS_SLIDER_MAX = 1000
+WRITE_URL_DEFAULT = (
+    "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
+)
+SELECT_URL_DEFAULT = (
+    "http://vmselect.192.168.1.254.nip.io/select/0/prometheus/api/v1/query_range"
+)
+
+INSERT_VUS_DEFAULT = 10
+INSERT_RATE_DEFAULT = 10
+
+SELECT_VUS_DEFAULT = 5
+SELECT_MAX_VUS_DEFAULT = 50
 
 # ---------------------------------------------------------------------------
 # Session state helpers
@@ -45,6 +60,19 @@ def _init_state() -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+    if st.session_state.get("write_url"):
+        st.session_state.write_url = _normalize_vmcluster_url(st.session_state.write_url)
+    if st.session_state.get("select_url"):
+        st.session_state.select_url = _normalize_vmcluster_url(st.session_state.select_url)
+
+
+def _normalize_vmcluster_url(url: str) -> str:
+    return (
+        url.replace("/insert/0/api/v1/write", "/insert/0/prometheus/api/v1/write")
+        .replace("/select/0/api/v1/query_range", "/select/0/prometheus/api/v1/query_range")
+        .replace("/select/0/api/v1/query", "/select/0/prometheus/api/v1/query")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +97,6 @@ def build_k6_script(
     num_metrics: int,
     num_labels: int,
     vus: int,
-    max_vus: int,
 ) -> str:
     tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
     return tmpl.render(
@@ -80,7 +107,7 @@ def build_k6_script(
         num_metrics=num_metrics,
         num_labels=num_labels,
         vus=vus,
-        max_vus=max_vus,
+        maxVUs=VUS_SLIDER_MAX,
     )
 
 
@@ -102,7 +129,9 @@ def _log_reader(container: str, q: queue.Queue, state_key: str) -> None:
     q.put(None)  # sentinel
 
 
-def start_k6(mode: str, script: str, write_url: str) -> None:
+def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
+    write_url = _normalize_vmcluster_url(write_url)
+    select_url = _normalize_vmcluster_url(select_url)
     container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
     port = K6_INSERT_PORT if mode == "insert" else K6_SELECT_PORT
     log_queue_key = f"{mode}_log_queue"
@@ -113,6 +142,7 @@ def start_k6(mode: str, script: str, write_url: str) -> None:
     tmp.write(script.encode())
     tmp.flush()
     tmp.close()
+    os.chmod(tmp.name, 0o644)
 
     subprocess.run(["podman", "rm", "-f", container], capture_output=True)
     subprocess.run(
@@ -122,8 +152,12 @@ def start_k6(mode: str, script: str, write_url: str) -> None:
             "-d",
             "--name",
             container,
-            "-p",
-            f"{port}:{port}",
+            "--network",
+            "host",
+            "-e",
+            f"WRITE_URL={write_url}",
+            "-e",
+            f"SELECT_URL={select_url}",
             "-e",
             f"K6_PROMETHEUS_RW_SERVER_URL={write_url}",
             "-v",
@@ -131,7 +165,7 @@ def start_k6(mode: str, script: str, write_url: str) -> None:
             K6_IMAGE,
             "run",
             f"--address=0.0.0.0:{port}",
-            "--out=xk6-prometheus-rw",
+            "--out=experimental-prometheus-rw",
             "--tag",
             f"mode={mode}",
             "/script.js",
@@ -141,6 +175,8 @@ def start_k6(mode: str, script: str, write_url: str) -> None:
 
     st.session_state[running_key] = True
     st.session_state[logs_key] = deque(maxlen=LOG_MAXLEN)
+    st.session_state[logs_key].append(f"write_url={write_url}")
+    st.session_state[logs_key].append(f"select_url={select_url}")
     q: queue.Queue = st.session_state[log_queue_key]
     while not q.empty():
         try:
@@ -203,33 +239,6 @@ def _drain_logs(mode: str) -> None:
             break
 
 
-def _live_controls(mode: str, api: str) -> None:
-    status = k6_get_status(api)
-    if not status:
-        st.info("k6 API not reachable")
-        return
-    paused = status.get("paused", False)
-    current_vus = status.get("vus", 1)
-    bcol1, bcol2 = st.columns(2)
-    with bcol1:
-        label = "Resume" if paused else "Pause"
-        if st.button(label, key=f"{mode}_pause", use_container_width=True):
-            k6_patch_status(api, {"paused": not paused})
-            st.rerun()
-    with bcol2:
-        new_vus = st.number_input(
-            "VUs",
-            min_value=0,
-            max_value=10000,
-            value=current_vus,
-            key=f"{mode}_live_vus",
-        )
-        if new_vus != current_vus:
-            if st.button("Apply VUs", key=f"{mode}_apply_vus"):
-                k6_patch_status(api, {"vus": new_vus})
-                st.rerun()
-
-
 def _scenario_panel(
     mode: str,
     api: str,
@@ -239,7 +248,6 @@ def _scenario_panel(
     num_metrics: int,
     num_labels: int,
     vus: int,
-    max_vus: int,
 ) -> None:
     _drain_logs(mode)
     running: bool = st.session_state.get(f"{mode}_running", False)
@@ -259,27 +267,59 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 vus,
-                max_vus,
             )
             with st.expander("Generated k6 script"):
                 st.code(script, language="javascript")
-            start_k6(mode, script, write_url)
+            start_k6(mode, script, write_url, select_url)
             st.rerun()
     else:
         st.success(f"{mode} running")
-        if st.button(
-            f"Stop {mode}",
-            type="secondary",
-            use_container_width=True,
-            key=f"stop_{mode}",
-        ):
-            stop_k6(mode)
-            st.rerun()
-        _live_controls(mode, api)
+        status = k6_get_status(api)
+        if not status:
+            st.info("k6 API not reachable")
+        else:
+            paused = status.get("paused", False)
+            bcol1, bcol2 = st.columns(2)
+            with bcol1:
+                if st.button(
+                    f"Stop {mode}",
+                    type="secondary",
+                    use_container_width=True,
+                    key=f"stop_{mode}",
+                ):
+                    stop_k6(mode)
+                    st.rerun()
+            with bcol2:
+                label = "Resume" if paused else "Pause"
+                if st.button(label, key=f"{mode}_pause", use_container_width=True):
+                    k6_patch_status(api, {"paused": not paused})
+                    st.rerun()
+
+    if running and vus:
+        k6_patch_status(api, {"vus": vus})
 
     st.subheader("Logs")
-    log_text = "\n".join(st.session_state[f"{mode}_logs"]) or "(no output yet)"
-    st.code(log_text, language="text")
+    with st.container(height=800):
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stChatMessage"] {
+                margin-bottom: 0.25rem;
+                padding: 0.25rem 0.5rem;
+            }
+            div[data-testid="stChatMessage"] pre {
+                margin: 0;
+                padding: 0.25rem 0.5rem;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        logs = [line for line in st.session_state[f"{mode}_logs"] if line.strip()]
+        logs = logs or ["(no output yet)"]
+        for line in logs:
+            with st.chat_message("assistant"):
+                st.code(line, language="text")
 
 
 # ---------------------------------------------------------------------------
@@ -297,31 +337,52 @@ def main() -> None:
 
     _init_state()
 
+    st.html("""
+    <style>
+    .stChatMessage {
+        padding-top: 0;
+        padding-bottom: 0;
+    }
+    </style>
+    """)
+
     with st.sidebar:
         st.header("Configuration")
         write_url = st.text_input(
             "Write URL (PRW endpoint)",
-            "http://localhost:8428/api/v1/write",
+            WRITE_URL_DEFAULT,
             key="write_url",
         )
         select_url = st.text_input(
             "Select URL (query_range endpoint)",
-            "http://localhost:8428/api/v1/query_range",
+            SELECT_URL_DEFAULT,
             key="select_url",
         )
+        write_url = _normalize_vmcluster_url(write_url)
+        select_url = _normalize_vmcluster_url(select_url)
         metric_name = st.text_input("Metric name", "k6_metric", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 10, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
 
         st.divider()
         st.header("Insert")
-        insert_vus = st.slider("Insert VUs", 0, 500, 10, key="insert_vus")
-        insert_max_vus = st.slider("Insert max VUs", 1, 500, 100, key="insert_max_vus")
+        insert_vus = st.slider(
+            "Insert VUs",
+            1,
+            VUS_SLIDER_MAX,
+            INSERT_VUS_DEFAULT,
+            key="insert_vus",
+        )
 
         st.divider()
         st.header("Select")
-        select_vus = st.slider("Select VUs", 0, 500, 5, key="select_vus")
-        select_max_vus = st.slider("Select max VUs", 1, 500, 50, key="select_max_vus")
+        select_vus = st.slider(
+            "Select VUs",
+            1,
+            VUS_SLIDER_MAX,
+            SELECT_VUS_DEFAULT,
+            key="select_vus",
+        )
 
     col_insert, col_select = st.columns(2, gap="large")
 
@@ -336,7 +397,6 @@ def main() -> None:
             num_metrics,
             num_labels,
             insert_vus,
-            insert_max_vus,
         )
 
     with col_select:
@@ -350,7 +410,6 @@ def main() -> None:
             num_metrics,
             num_labels,
             select_vus,
-            select_max_vus,
         )
 
     if st.session_state.get("insert_running") or st.session_state.get("select_running"):
