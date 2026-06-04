@@ -146,6 +146,30 @@ def _script_config(
     return metric_name, num_metrics, num_labels
 
 
+def _workload_config(
+    runtime: str,
+    write_url: str,
+    select_url: str,
+    namespace: str,
+    metric_name: str,
+    num_metrics: int,
+    num_labels: int,
+    vus: int,
+) -> tuple[Any, ...]:
+    if runtime != RUNTIME_K8S:
+        return _script_config(metric_name, num_metrics, num_labels)
+    return (
+        runtime,
+        namespace,
+        write_url,
+        select_url,
+        metric_name,
+        num_metrics,
+        num_labels,
+        vus,
+    )
+
+
 def _log_recreate(
     action: str,
     runtime: str,
@@ -237,6 +261,14 @@ def _kubectl_namespace_args(namespace: str) -> list[str]:
     return ["-n", namespace] if namespace else []
 
 
+def _kubectl_run(args: list[str], input_data: bytes | None = None) -> bytes:
+    proc = subprocess.run(args, input=input_data, capture_output=True)
+    if proc.returncode == 0:
+        return proc.stdout
+    detail = (proc.stderr or proc.stdout).decode(errors="replace").strip()
+    raise RuntimeError(f"kubectl failed: {' '.join(args)}\n{detail}")
+
+
 def _kubectl_delete(namespace: str, name: str) -> None:
     ns_args = _kubectl_namespace_args(namespace)
     subprocess.run(
@@ -249,6 +281,22 @@ def _kubectl_delete(namespace: str, name: str) -> None:
     )
 
 
+def _kubectl_wait_deleted(
+    namespace: str, kind: str, name: str, timeout_s: float = 30
+) -> None:
+    ns_args = _kubectl_namespace_args(namespace)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        proc = subprocess.run(
+            ["kubectl", *ns_args, "get", kind, name],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"timed out waiting for {kind}/{name} deletion")
+
+
 def _apply_script_configmap(namespace: str, name: str, script: str) -> None:
     ns_args = _kubectl_namespace_args(namespace)
     tmp = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
@@ -256,7 +304,7 @@ def _apply_script_configmap(namespace: str, name: str, script: str) -> None:
         tmp.write(script.encode())
         tmp.flush()
         tmp.close()
-        configmap = subprocess.run(
+        configmap = _kubectl_run(
             [
                 "kubectl",
                 *ns_args,
@@ -267,14 +315,11 @@ def _apply_script_configmap(namespace: str, name: str, script: str) -> None:
                 "--dry-run=client",
                 "-o",
                 "yaml",
-            ],
-            capture_output=True,
-            check=True,
+            ]
         )
-        subprocess.run(
+        _kubectl_run(
             ["kubectl", *ns_args, "apply", "-f", "-"],
-            input=configmap.stdout,
-            check=True,
+            input_data=configmap,
         )
     finally:
         tmp.close()
@@ -292,12 +337,13 @@ def start_k6_pod(
     ns_args = _kubectl_namespace_args(namespace)
 
     _kubectl_delete(namespace, name)
+    _kubectl_wait_deleted(namespace, "pod", name)
+    _kubectl_wait_deleted(namespace, "configmap", name)
     _apply_script_configmap(namespace, name, script)
     manifest = build_k6_pod_manifest(mode, name, write_url, select_url)
-    subprocess.run(
+    _kubectl_run(
         ["kubectl", *ns_args, "apply", "-f", "-"],
-        input=manifest.encode(),
-        check=True,
+        input_data=manifest.encode(),
     )
     st.session_state[f"{mode}_running"] = True
     st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
@@ -379,10 +425,15 @@ def restart_k6(
         vus,
     )
     start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
-    st.session_state[f"{mode}_script_config"] = _script_config(
+    st.session_state[f"{mode}_script_config"] = _workload_config(
+        runtime,
+        write_url,
+        select_url,
+        namespace,
         metric_name,
         num_metrics,
         num_labels,
+        vus,
     )
 
 
@@ -441,13 +492,43 @@ def _scenario_panel(
     vus: int,
 ) -> None:
     running: bool = st.session_state.get(f"{mode}_running", False)
+
+    if runtime == RUNTIME_K8S and not running:
+        phase = get_k6_pod_phase(mode, namespace)
+        if phase:
+            running = True
+            st.session_state[f"{mode}_running"] = True
+            st.session_state[f"{mode}_runtime"] = runtime
+            st.session_state[f"{mode}_namespace"] = namespace
+
     active_runtime: str = st.session_state.get(f"{mode}_runtime", runtime)
     active_namespace: str = st.session_state.get(f"{mode}_namespace", namespace)
-    script_config = _script_config(metric_name, num_metrics, num_labels)
+    script_config = _workload_config(
+        active_runtime,
+        write_url,
+        select_url,
+        active_namespace,
+        metric_name,
+        num_metrics,
+        num_labels,
+        vus,
+    )
+    if running and st.session_state.get(f"{mode}_script_config") is None:
+        st.session_state[f"{mode}_script_config"] = script_config
 
     if not running:
         active_runtime = runtime
         active_namespace = namespace
+        script_config = _workload_config(
+            runtime,
+            write_url,
+            select_url,
+            namespace,
+            metric_name,
+            num_metrics,
+            num_labels,
+            vus,
+        )
         if st.button(
             f"Start {mode}",
             type="primary",
@@ -493,7 +574,7 @@ def _scenario_panel(
                 num_labels,
                 vus,
             )
-            st.info(f"{mode} restarted with updated metric configuration")
+            st.info(f"{mode} restarted with updated parameters")
             st.rerun()
 
         st.success(f"{mode} running via {active_runtime}")

@@ -48,7 +48,7 @@ Sidebar fields:
 - `Insert VUs`: insert workload VUs.
 - `Select VUs`: select workload VUs.
 
-Changing metric prefix, variants, or labels while a scenario is running regenerates k6 script and restarts affected workload. Changing VUs is applied through k6 REST API without restart for Podman. Kubernetes pods restart only when script configuration changes.
+Changing metric prefix, variants, or labels while a scenario is running regenerates k6 script and restarts affected workload. Changing VUs is applied through k6 REST API without restart for Podman. Kubernetes pods restart when workload parameters change, including URLs, namespace, metric config, or VUs.
 
 Each start or automatic restart logs workload parameters to Streamlit output and shows latest values in `Last job parameters`. Running workloads refresh the page every 2 seconds so Kubernetes Pod phase stays current.
 
