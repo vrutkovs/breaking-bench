@@ -34,7 +34,8 @@ K6_SELECT_API = f"http://localhost:{K6_SELECT_PORT}/v1"
 
 INSERT_VUS_DEFAULT = 1
 SELECT_VUS_DEFAULT = 1
-VUS_SLIDER_MAX = 100
+INSERT_VUS_SLIDER_MAX = 500
+SELECT_VUS_SLIDER_MAX = 10
 
 # ---------------------------------------------------------------------------
 # Session state helpers
@@ -85,7 +86,7 @@ def build_k6_script(
         num_metrics=num_metrics,
         num_labels=num_labels,
         vus=vus,
-        maxVUs=VUS_SLIDER_MAX,
+        maxVUs=INSERT_VUS_SLIDER_MAX if mode == "insert" else SELECT_VUS_SLIDER_MAX,
     )
 
 
@@ -327,7 +328,7 @@ def main() -> None:
         insert_vus = st.slider(
             "Insert VUs",
             1,
-            VUS_SLIDER_MAX,
+            INSERT_VUS_SLIDER_MAX,
             INSERT_VUS_DEFAULT,
             key="insert_vus",
         )
@@ -337,7 +338,7 @@ def main() -> None:
         select_vus = st.slider(
             "Select VUs",
             1,
-            VUS_SLIDER_MAX,
+            SELECT_VUS_SLIDER_MAX,
             SELECT_VUS_DEFAULT,
             key="select_vus",
         )
