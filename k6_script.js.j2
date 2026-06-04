@@ -1,0 +1,23 @@
+import { Trend } from 'k6';
+import { Faker } from 'k6/x/faker';
+
+const faker = new Faker(Date.now());
+const metric = new Trend('{{ metric_name }}', true);
+
+export const options = {
+  scenarios: {
+    main: {
+{% for key, value in opts_lines %}
+      {{ key }}: {{ value }},
+{% endfor %}
+    },
+  },
+};
+
+export default function () {
+  const tags = {};
+{% for i in range(num_labels) %}
+  tags['label_{{ i }}'] = faker.person.firstName();
+{% endfor %}
+  metric.add(Math.random() * 100, tags);
+}

@@ -8,9 +8,10 @@ import subprocess
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
-
+import jinja2
 import requests
 import streamlit as st
 
@@ -53,11 +54,69 @@ def _init_state() -> None:
 # ---------------------------------------------------------------------------
 
 
+_TEMPLATE_PATH = Path(__file__).parent / "k6_script.js.j2"
+_JINJA_ENV = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(str(_TEMPLATE_PATH.parent)),
+    keep_trailing_newline=True,
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+
+
 def _stages_to_js(stages: list[dict]) -> str:
-    parts = []
-    for s in stages:
-        parts.append(f'{{ duration: "{s["duration"]}", target: {s["target"]} }}')
+    parts = [f'{{ duration: "{s["duration"]}", target: {s["target"]} }}' for s in stages]
     return "[" + ", ".join(parts) + "]"
+
+
+def _render_opts(executor: str, settings: dict) -> list[tuple[str, str]]:
+    """Return list of (key, js_value_string) pairs for the executor options."""
+    opts: dict[str, Any] = {"executor": executor}
+
+    if executor == "constant-vus":
+        opts["vus"] = settings["vus"]
+        opts["duration"] = settings["duration"]
+    elif executor == "ramping-vus":
+        opts["stages"] = settings["stages"]
+        if settings.get("gracefulRampDown"):
+            opts["gracefulRampDown"] = settings["gracefulRampDown"]
+    elif executor == "constant-arrival-rate":
+        opts["rate"] = settings["rate"]
+        opts["timeUnit"] = settings["timeUnit"]
+        opts["duration"] = settings["duration"]
+        opts["preAllocatedVUs"] = settings["preAllocatedVUs"]
+        if settings.get("maxVUs"):
+            opts["maxVUs"] = settings["maxVUs"]
+    elif executor == "ramping-arrival-rate":
+        opts["stages"] = settings["stages"]
+        opts["preAllocatedVUs"] = settings["preAllocatedVUs"]
+        if settings.get("maxVUs"):
+            opts["maxVUs"] = settings["maxVUs"]
+    elif executor == "per-vu-iterations":
+        opts["vus"] = settings["vus"]
+        opts["iterations"] = settings["iterations"]
+        if settings.get("maxDuration"):
+            opts["maxDuration"] = settings["maxDuration"]
+    elif executor == "shared-iterations":
+        opts["vus"] = settings["vus"]
+        opts["iterations"] = settings["iterations"]
+        if settings.get("maxDuration"):
+            opts["maxDuration"] = settings["maxDuration"]
+    elif executor == "externally-controlled":
+        opts["vus"] = settings["vus"]
+        if settings.get("maxVUs"):
+            opts["maxVUs"] = settings["maxVUs"]
+        if settings.get("duration"):
+            opts["duration"] = settings["duration"]
+
+    result = []
+    for k, v in opts.items():
+        if k == "stages":
+            result.append((k, _stages_to_js(v)))
+        elif isinstance(v, str):
+            result.append((k, f'"{v}"'))
+        else:
+            result.append((k, json.dumps(v)))
+    return result
 
 
 def build_k6_script(
@@ -66,87 +125,12 @@ def build_k6_script(
     metric_name: str,
     num_labels: int,
 ) -> str:
-    # Build executor options block
-    opts: dict[str, Any] = {"executor": executor}
-
-    if executor == "constant-vus":
-        opts["vus"] = settings["vus"]
-        opts["duration"] = settings["duration"]
-
-    elif executor == "ramping-vus":
-        opts["stages"] = settings["stages"]
-        if settings.get("gracefulRampDown"):
-            opts["gracefulRampDown"] = settings["gracefulRampDown"]
-
-    elif executor == "constant-arrival-rate":
-        opts["rate"] = settings["rate"]
-        opts["timeUnit"] = settings["timeUnit"]
-        opts["duration"] = settings["duration"]
-        opts["preAllocatedVUs"] = settings["preAllocatedVUs"]
-        if settings.get("maxVUs"):
-            opts["maxVUs"] = settings["maxVUs"]
-
-    elif executor == "ramping-arrival-rate":
-        opts["stages"] = settings["stages"]
-        opts["preAllocatedVUs"] = settings["preAllocatedVUs"]
-        if settings.get("maxVUs"):
-            opts["maxVUs"] = settings["maxVUs"]
-
-    elif executor == "per-vu-iterations":
-        opts["vus"] = settings["vus"]
-        opts["iterations"] = settings["iterations"]
-        if settings.get("maxDuration"):
-            opts["maxDuration"] = settings["maxDuration"]
-
-    elif executor == "shared-iterations":
-        opts["vus"] = settings["vus"]
-        opts["iterations"] = settings["iterations"]
-        if settings.get("maxDuration"):
-            opts["maxDuration"] = settings["maxDuration"]
-
-    elif executor == "externally-controlled":
-        opts["vus"] = settings["vus"]
-        if settings.get("maxVUs"):
-            opts["maxVUs"] = settings["maxVUs"]
-        if settings.get("duration"):
-            opts["duration"] = settings["duration"]
-
-    # Serialize stages as JS array literals, everything else as JSON
-    opts_lines: list[str] = []
-    for k, v in opts.items():
-        if k == "stages":
-            opts_lines.append(f'          {k}: {_stages_to_js(v)},')
-        elif isinstance(v, str):
-            opts_lines.append(f'          {k}: "{v}",')
-        else:
-            opts_lines.append(f"          {k}: {json.dumps(v)},")
-
-    opts_block = "\n".join(opts_lines)
-
-    label_lines = "\n".join(
-        [f"    tags['label_{i}'] = faker.person.firstName();" for i in range(num_labels)]
+    tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
+    return tmpl.render(
+        metric_name=metric_name,
+        num_labels=num_labels,
+        opts_lines=_render_opts(executor, settings),
     )
-
-    return f"""import {{ Trend }} from 'k6';
-import {{ Faker }} from 'k6/x/faker';
-
-const faker = new Faker(Date.now());
-const metric = new Trend('{metric_name}', true);
-
-export const options = {{
-  scenarios: {{
-    main: {{
-{opts_block}
-    }},
-  }},
-}};
-
-export default function () {{
-  const tags = {{}};
-{label_lines}
-  metric.add(Math.random() * 100, tags);
-}}
-"""
 
 
 # ---------------------------------------------------------------------------
