@@ -45,6 +45,8 @@ def _init_state() -> None:
     defaults: dict[str, Any] = {
         "insert_running": False,
         "select_running": False,
+        "insert_script_config": None,
+        "select_script_config": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -87,6 +89,10 @@ def build_k6_script(
     )
 
 
+def _script_config(metric_name: str, num_metrics: int, num_labels: int) -> tuple[str, int, int]:
+    return metric_name, num_metrics, num_labels
+
+
 # ---------------------------------------------------------------------------
 # Podman runner
 # ---------------------------------------------------------------------------
@@ -126,7 +132,7 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
             f"--address=0.0.0.0:{port}",
             "--out=experimental-prometheus-rw",
             "--tag",
-            f"mode={mode}",
+            f"testid={mode}",
             "/script.js",
         ],
         check=True,
@@ -135,10 +141,37 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
     st.session_state[running_key] = True
 
 
+def restart_k6(
+    mode: str,
+    write_url: str,
+    select_url: str,
+    metric_name: str,
+    num_metrics: int,
+    num_labels: int,
+    vus: int,
+) -> None:
+    script = build_k6_script(
+        mode,
+        write_url,
+        select_url,
+        metric_name,
+        num_metrics,
+        num_labels,
+        vus,
+    )
+    start_k6(mode, script, write_url, select_url)
+    st.session_state[f"{mode}_script_config"] = _script_config(
+        metric_name,
+        num_metrics,
+        num_labels,
+    )
+
+
 def stop_k6(mode: str) -> None:
     container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
     subprocess.run(["podman", "rm", "-f", container], capture_output=True)
     st.session_state[f"{mode}_running"] = False
+    st.session_state[f"{mode}_script_config"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +213,7 @@ def _scenario_panel(
     vus: int,
 ) -> None:
     running: bool = st.session_state.get(f"{mode}_running", False)
+    script_config = _script_config(metric_name, num_metrics, num_labels)
 
     if not running:
         if st.button(
@@ -200,8 +234,22 @@ def _scenario_panel(
             with st.expander("Generated k6 script"):
                 st.code(script, language="javascript")
             start_k6(mode, script, write_url, select_url)
+            st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
     else:
+        if st.session_state.get(f"{mode}_script_config") != script_config:
+            restart_k6(
+                mode,
+                write_url,
+                select_url,
+                metric_name,
+                num_metrics,
+                num_labels,
+                vus,
+            )
+            st.info(f"{mode} restarted with updated metric configuration")
+            st.rerun()
+
         st.success(f"{mode} running")
         status = k6_get_status(api)
         if not status:
@@ -264,7 +312,7 @@ def main() -> None:
             SELECT_URL_DEFAULT,
             key="select_url",
         )
-        metric_name = st.text_input("Metric name", "k6_metric", key="metric_name")
+        metric_name = st.text_input("Metric name prefix", "test_", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
 
