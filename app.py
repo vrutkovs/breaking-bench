@@ -117,15 +117,24 @@ def start_k6(mode: str, script: str, write_url: str) -> None:
     subprocess.run(["podman", "rm", "-f", container], capture_output=True)
     subprocess.run(
         [
-            "podman", "run", "-d",
-            "--name", container,
-            "--platform", "linux/amd64",
-            "-p", f"{port}:{port}",
-            "-e", f"K6_PROMETHEUS_RW_SERVER_URL={write_url}",
-            "-v", f"{tmp.name}:/script.js:ro",
+            "podman",
+            "run",
+            "-d",
+            "--name",
+            container,
+            "-p",
+            f"{port}:{port}",
+            "-e",
+            f"K6_PROMETHEUS_RW_SERVER_URL={write_url}",
+            "-v",
+            f"{tmp.name}:/script.js:ro",
             K6_IMAGE,
-            "run", f"--address=0.0.0.0:{port}", "--out=xk6-prometheus-rw",
-            f"--tag", f"mode={mode}", "/script.js",
+            "run",
+            f"--address=0.0.0.0:{port}",
+            "--out=xk6-prometheus-rw",
+            "--tag",
+            f"mode={mode}",
+            "/script.js",
         ],
         check=True,
     )
@@ -139,7 +148,9 @@ def start_k6(mode: str, script: str, write_url: str) -> None:
         except queue.Empty:
             break
 
-    t = threading.Thread(target=_log_reader, args=(container, q, running_key), daemon=True)
+    t = threading.Thread(
+        target=_log_reader, args=(container, q, running_key), daemon=True
+    )
     t.start()
 
 
@@ -207,7 +218,11 @@ def _live_controls(mode: str, api: str) -> None:
             st.rerun()
     with bcol2:
         new_vus = st.number_input(
-            "VUs", min_value=0, max_value=10000, value=current_vus, key=f"{mode}_live_vus"
+            "VUs",
+            min_value=0,
+            max_value=10000,
+            value=current_vus,
+            key=f"{mode}_live_vus",
         )
         if new_vus != current_vus:
             if st.button("Apply VUs", key=f"{mode}_apply_vus"):
@@ -230,15 +245,34 @@ def _scenario_panel(
     running: bool = st.session_state.get(f"{mode}_running", False)
 
     if not running:
-        if st.button(f"Start {mode}", type="primary", use_container_width=True, key=f"start_{mode}"):
-            script = build_k6_script(mode, write_url, select_url, metric_name, num_metrics, num_labels, vus, max_vus)
+        if st.button(
+            f"Start {mode}",
+            type="primary",
+            use_container_width=True,
+            key=f"start_{mode}",
+        ):
+            script = build_k6_script(
+                mode,
+                write_url,
+                select_url,
+                metric_name,
+                num_metrics,
+                num_labels,
+                vus,
+                max_vus,
+            )
             with st.expander("Generated k6 script"):
                 st.code(script, language="javascript")
             start_k6(mode, script, write_url)
             st.rerun()
     else:
         st.success(f"{mode} running")
-        if st.button(f"Stop {mode}", type="secondary", use_container_width=True, key=f"stop_{mode}"):
+        if st.button(
+            f"Stop {mode}",
+            type="secondary",
+            use_container_width=True,
+            key=f"stop_{mode}",
+        ):
             stop_k6(mode)
             st.rerun()
         _live_controls(mode, api)
@@ -294,17 +328,29 @@ def main() -> None:
     with col_insert:
         st.subheader("Insert")
         _scenario_panel(
-            "insert", K6_INSERT_API,
-            write_url, select_url, metric_name, num_metrics, num_labels,
-            insert_vus, insert_max_vus,
+            "insert",
+            K6_INSERT_API,
+            write_url,
+            select_url,
+            metric_name,
+            num_metrics,
+            num_labels,
+            insert_vus,
+            insert_max_vus,
         )
 
     with col_select:
         st.subheader("Select")
         _scenario_panel(
-            "select", K6_SELECT_API,
-            write_url, select_url, metric_name, num_metrics, num_labels,
-            select_vus, select_max_vus,
+            "select",
+            K6_SELECT_API,
+            write_url,
+            select_url,
+            metric_name,
+            num_metrics,
+            num_labels,
+            select_vus,
+            select_max_vus,
         )
 
     if st.session_state.get("insert_running") or st.session_state.get("select_running"):

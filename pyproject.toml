@@ -9,3 +9,12 @@ dependencies = [
 ]
 
 [tool.uv]
+
+[dependency-groups]
+dev = [
+    "types-requests",
+    "mypy",
+]
+
+[tool.mypy]
+ignore_missing_imports = true
