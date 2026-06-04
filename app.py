@@ -8,7 +8,6 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +27,7 @@ K6_INSERT_PORT = 6565
 K6_SELECT_PORT = 6566
 K6_INSERT_API = f"http://localhost:{K6_INSERT_PORT}/v1"
 K6_SELECT_API = f"http://localhost:{K6_SELECT_PORT}/v1"
-LOG_MAXLEN = 300
-VUS_SLIDER_MAX = 1000
+VUS_SLIDER_MAX = 100
 WRITE_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
 )
@@ -52,8 +50,6 @@ def _init_state() -> None:
     defaults: dict[str, Any] = {
         "insert_running": False,
         "select_running": False,
-        "insert_logs": deque(maxlen=LOG_MAXLEN),
-        "select_logs": deque(maxlen=LOG_MAXLEN),
         "insert_log_queue": queue.Queue(),
         "select_log_queue": queue.Queue(),
     }
@@ -62,15 +58,21 @@ def _init_state() -> None:
             st.session_state[k] = v
 
     if st.session_state.get("write_url"):
-        st.session_state.write_url = _normalize_vmcluster_url(st.session_state.write_url)
+        st.session_state.write_url = _normalize_vmcluster_url(
+            st.session_state.write_url
+        )
     if st.session_state.get("select_url"):
-        st.session_state.select_url = _normalize_vmcluster_url(st.session_state.select_url)
+        st.session_state.select_url = _normalize_vmcluster_url(
+            st.session_state.select_url
+        )
 
 
 def _normalize_vmcluster_url(url: str) -> str:
     return (
         url.replace("/insert/0/api/v1/write", "/insert/0/prometheus/api/v1/write")
-        .replace("/select/0/api/v1/query_range", "/select/0/prometheus/api/v1/query_range")
+        .replace(
+            "/select/0/api/v1/query_range", "/select/0/prometheus/api/v1/query_range"
+        )
         .replace("/select/0/api/v1/query", "/select/0/prometheus/api/v1/query")
     )
 
@@ -136,7 +138,6 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
     port = K6_INSERT_PORT if mode == "insert" else K6_SELECT_PORT
     log_queue_key = f"{mode}_log_queue"
     running_key = f"{mode}_running"
-    logs_key = f"{mode}_logs"
 
     tmp = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
     tmp.write(script.encode())
@@ -174,9 +175,6 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
     )
 
     st.session_state[running_key] = True
-    st.session_state[logs_key] = deque(maxlen=LOG_MAXLEN)
-    st.session_state[logs_key].append(f"write_url={write_url}")
-    st.session_state[logs_key].append(f"select_url={select_url}")
     q: queue.Queue = st.session_state[log_queue_key]
     while not q.empty():
         try:
@@ -233,8 +231,6 @@ def _drain_logs(mode: str) -> None:
             line = q.get_nowait()
             if line is None:
                 st.session_state[f"{mode}_running"] = False
-            else:
-                st.session_state[f"{mode}_logs"].append(line)
         except queue.Empty:
             break
 
@@ -297,29 +293,6 @@ def _scenario_panel(
 
     if running and vus:
         k6_patch_status(api, {"vus": vus})
-
-    st.subheader("Logs")
-    with st.container(height=800):
-        st.markdown(
-            """
-            <style>
-            div[data-testid="stChatMessage"] {
-                margin-bottom: 0.25rem;
-                padding: 0.25rem 0.5rem;
-            }
-            div[data-testid="stChatMessage"] pre {
-                margin: 0;
-                padding: 0.25rem 0.5rem;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        logs = [line for line in st.session_state[f"{mode}_logs"] if line.strip()]
-        logs = logs or ["(no output yet)"]
-        for line in logs:
-            with st.chat_message("assistant"):
-                st.code(line, language="text")
 
 
 # ---------------------------------------------------------------------------
