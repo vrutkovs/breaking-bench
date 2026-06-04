@@ -1,23 +1,73 @@
-import { Trend } from 'k6';
-import { Faker } from 'k6/x/faker';
+import remote from 'k6/x/remotewrite';
+import faker from 'k6/x/faker';
+import http from 'k6/http';
+import { check } from 'k6';
 
-const faker = new Faker(Date.now());
-const metric = new Trend('{{ metric_name }}', true);
+const WRITE_URL = __ENV.WRITE_URL || '{{ write_url }}';
+const SELECT_URL = __ENV.SELECT_URL || '{{ select_url }}';
+const DURATION  = __ENV.DURATION  || '8760h';
 
 export const options = {
   scenarios: {
-    main: {
-{% for key, value in opts_lines %}
-      {{ key }}: {{ value }},
-{% endfor %}
+    insert: {
+      executor: 'constant-arrival-rate',
+      duration: DURATION,
+      rate: {{ insert_rate }},
+      timeUnit: '1s',
+      preAllocatedVUs: {{ insert_vus }},
+      maxVUs: {{ insert_vus * 2 }},
+      exec: 'insert',
+    },
+    select: {
+      executor: 'constant-arrival-rate',
+      duration: DURATION,
+      rate: {{ select_rate }},
+      timeUnit: '1s',
+      preAllocatedVUs: {{ select_vus }},
+      maxVUs: {{ select_vus * 2 }},
+      exec: 'select',
     },
   },
+  insecureSkipTLSVerify: true,
 };
 
-export default function () {
-  const tags = {};
-{% for i in range(num_labels) %}
-  tags['label_{{ i }}'] = faker.person.firstName();
-{% endfor %}
-  metric.add(Math.random() * 100, tags);
+const client = new remote.Client({ url: WRITE_URL });
+
+function run_query(query) {
+  const now = Date.now();
+  const start = Math.floor((now - 10 * 60 * 1000) / 1000);
+  const end = Math.floor(now / 1000);
+  const res = http.post(
+    SELECT_URL,
+    { query: query, start: start, end: end, step: '15s' },
+    { responseType: 'none' },
+  );
+  check(res, { 'query status is 200': (r) => r.status === 200 });
 }
+
+export function select() {
+  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
+  run_query(
+    `sum by(first_name, last_name{% for i in range(num_labels) %}, label_{{ i }}{% endfor %}) (rate({{ metric_name }}_${metricIdx}[5m]))`
+  );
+}
+
+export function insert() {
+  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
+  const res = client.store([
+    remote.Timeseries(
+      {
+        __name__: `{{ metric_name }}_${metricIdx}`,
+        first_name: faker.person.firstName(),
+        last_name: faker.person.lastName(),
+{% for i in range(num_labels) %}
+        label_{{ i }}: faker.person.firstName(),
+{% endfor %}
+      },
+      [remote.Sample(faker.numbers.intRange(1, 10000), Date.now())],
+    ),
+  ]);
+  check(res, { 'insert status is 2xx': (r) => r.status >= 200 && r.status < 300 });
+}
+
+export default function () {}
