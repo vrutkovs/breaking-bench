@@ -45,10 +45,10 @@ Sidebar fields:
 - `Metric name prefix`: prefix for generated metrics. Metric names become `<prefix>_<index>`.
 - `Metric variants`: number of metric names to generate.
 - `Extra labels`: number of additional labels named `label_0`, `label_1`, etc.
-- `Insert VUs`: insert workload VUs.
-- `Select VUs`: select workload VUs.
+- `Insert RPS`: insert workload request rate.
+- `Select RPS`: select workload request rate for each select query scenario.
 
-Changing metric prefix, variants, or labels while a scenario is running regenerates k6 script and restarts affected workload. Changing VUs is applied through k6 REST API without restart for Podman. Kubernetes pods restart when workload parameters change, including URLs, namespace, metric config, or VUs.
+Changing URLs, metric prefix, variants, labels, or RPS while a scenario is running regenerates k6 script and restarts affected workload.
 
 Each start or automatic restart logs workload parameters to Streamlit output and shows latest values in `Last job parameters`. Running workloads refresh the page every 2 seconds so Kubernetes Pod phase stays current.
 
@@ -57,7 +57,6 @@ Each start or automatic restart logs workload parameters to Streamlit output and
 - `Start insert`: starts remote-write workload.
 - `Start select`: starts query workload.
 - `Stop`: removes corresponding Podman container or Kubernetes Pod and ConfigMap.
-- `Pause` / `Resume`: controls running Podman k6 process through REST API.
 
 Podman container names are reused with `--replace`. Kubernetes runner creates Pods and ConfigMaps named `breaking-bench-k6-insert` and `breaking-bench-k6-select`.
 
@@ -73,8 +72,6 @@ Insert workload writes custom metrics with labels:
 k6 also writes built-in metrics such as:
 
 - `k6_iterations_total`
-- `k6_vus`
-- `k6_vus_max`
 - `k6_http_reqs_total`
 - `k6_http_req_duration_*`
 

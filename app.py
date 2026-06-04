@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import jinja2
-import requests
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -24,8 +23,6 @@ K6_INSERT_CONTAINER = "breaking-bench-k6-insert"
 K6_SELECT_CONTAINER = "breaking-bench-k6-select"
 K6_INSERT_POD = "breaking-bench-k6-insert"
 K6_SELECT_POD = "breaking-bench-k6-select"
-K6_INSERT_PORT = 6565
-K6_SELECT_PORT = 6566
 
 WRITE_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
@@ -33,13 +30,10 @@ WRITE_URL_DEFAULT = (
 SELECT_URL_DEFAULT = (
     "http://vmselect.192.168.1.254.nip.io/select/0/prometheus/api/v1/query_range"
 )
-K6_INSERT_API = f"http://localhost:{K6_INSERT_PORT}/v1"
-K6_SELECT_API = f"http://localhost:{K6_SELECT_PORT}/v1"
-
-INSERT_VUS_DEFAULT = 1
-SELECT_VUS_DEFAULT = 1
-INSERT_VUS_SLIDER_MAX = 500
-SELECT_VUS_SLIDER_MAX = 10
+INSERT_RPS_DEFAULT = 1
+SELECT_RPS_DEFAULT = 1
+INSERT_RPS_SLIDER_MAX = 5000
+SELECT_RPS_SLIDER_MAX = 10
 RUNTIME_PODMAN = "Podman"
 RUNTIME_K8S = "Kubernetes pod"
 
@@ -109,7 +103,7 @@ def build_k6_script(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    vus: int,
+    rps: int,
 ) -> str:
     tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
     return tmpl.render(
@@ -119,8 +113,8 @@ def build_k6_script(
         metric_name=metric_name,
         num_metrics=num_metrics,
         num_labels=num_labels,
-        vus=vus,
-        maxVUs=INSERT_VUS_SLIDER_MAX if mode == "insert" else SELECT_VUS_SLIDER_MAX,
+        rps=rps,
+        maxVUs=max(1, rps),
     )
 
 
@@ -154,10 +148,8 @@ def _workload_config(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    vus: int,
+    rps: int,
 ) -> tuple[Any, ...]:
-    if runtime != RUNTIME_K8S:
-        return _script_config(metric_name, num_metrics, num_labels)
     return (
         runtime,
         namespace,
@@ -166,7 +158,7 @@ def _workload_config(
         metric_name,
         num_metrics,
         num_labels,
-        vus,
+        rps,
     )
 
 
@@ -180,7 +172,7 @@ def _log_recreate(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    vus: int,
+    rps: int,
 ) -> None:
     entry: dict[str, Any] = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -193,7 +185,7 @@ def _log_recreate(
         "metric_name": metric_name,
         "metric_variants": num_metrics,
         "extra_labels": num_labels,
-        "vus": vus,
+        "rps": rps,
     }
     key = f"{mode}_recreate_logs"
     logs = list(st.session_state.get(key, []))
@@ -209,7 +201,6 @@ def _log_recreate(
 
 def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
     container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
-    port = K6_INSERT_PORT if mode == "insert" else K6_SELECT_PORT
     running_key = f"{mode}_running"
 
     tmp = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
@@ -241,7 +232,6 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
             f"{tmp.name}:/script.js:ro",
             K6_IMAGE,
             "run",
-            f"--address=0.0.0.0:{port}",
             "--out=experimental-prometheus-rw",
             "--tag",
             f"testid={mode}",
@@ -269,9 +259,7 @@ def _kubectl_run(args: list[str], input_data: bytes | None = None) -> bytes:
     raise RuntimeError(f"kubectl failed: {' '.join(args)}\n{detail}")
 
 
-def _kubectl_delete(
-    namespace: str, name: str, include_configmap: bool = True
-) -> None:
+def _kubectl_delete(namespace: str, name: str, include_configmap: bool = True) -> None:
     ns_args = _kubectl_namespace_args(namespace)
     subprocess.run(
         ["kubectl", *ns_args, "delete", "pod", name, "--ignore-not-found"],
@@ -404,7 +392,7 @@ def restart_k6(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    vus: int,
+    rps: int,
 ) -> None:
     script = build_k6_script(
         mode,
@@ -413,7 +401,7 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
-        vus,
+        rps,
     )
     _log_recreate(
         "recreate",
@@ -425,7 +413,7 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
-        vus,
+        rps,
     )
     start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
     st.session_state[f"{mode}_script_config"] = _workload_config(
@@ -436,7 +424,7 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
-        vus,
+        rps,
     )
 
 
@@ -455,44 +443,18 @@ def stop_k6_workload(runtime: str, mode: str, namespace: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# k6 REST API helpers
-# ---------------------------------------------------------------------------
-
-
-def k6_get_status(api: str) -> dict | None:
-    try:
-        r = requests.get(f"{api}/status", timeout=2)
-        r.raise_for_status()
-        return r.json()["data"]["attributes"]
-    except Exception:
-        return None
-
-
-def k6_patch_status(api: str, attrs: dict) -> None:
-    try:
-        requests.patch(
-            f"{api}/status",
-            json={"data": {"type": "status", "id": "default", "attributes": attrs}},
-            timeout=2,
-        )
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # UI helpers
 # ---------------------------------------------------------------------------
 def _scenario_panel(
     runtime: str,
     mode: str,
-    api: str,
     write_url: str,
     select_url: str,
     namespace: str,
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    vus: int,
+    rps: int,
 ) -> None:
     running: bool = st.session_state.get(f"{mode}_running", False)
 
@@ -514,7 +476,7 @@ def _scenario_panel(
         metric_name,
         num_metrics,
         num_labels,
-        vus,
+        rps,
     )
     if running and st.session_state.get(f"{mode}_script_config") is None:
         st.session_state[f"{mode}_script_config"] = script_config
@@ -530,7 +492,7 @@ def _scenario_panel(
             metric_name,
             num_metrics,
             num_labels,
-            vus,
+            rps,
         )
         if st.button(
             f"Start {mode}",
@@ -545,7 +507,7 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
-                vus,
+                rps,
             )
             with st.expander("Generated k6 script"):
                 st.code(script, language="javascript")
@@ -559,7 +521,7 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
-                vus,
+                rps,
             )
             start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
             st.session_state[f"{mode}_script_config"] = script_config
@@ -575,7 +537,7 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
-                vus,
+                rps,
             )
             st.info(f"{mode} restarted with updated parameters")
             st.rerun()
@@ -583,37 +545,23 @@ def _scenario_panel(
         st.success(f"{mode} running via {active_runtime}")
         if active_runtime != runtime:
             st.info(f"Stop current {active_runtime} workload before switching runner")
-        bcol1, bcol2 = st.columns(2)
-        with bcol1:
-            if st.button(
-                f"Stop {mode}",
-                type="secondary",
-                use_container_width=True,
-                key=f"stop_{mode}",
-            ):
-                stop_k6_workload(active_runtime, mode, active_namespace)
-                st.rerun()
+        if st.button(
+            f"Stop {mode}",
+            type="secondary",
+            use_container_width=True,
+            key=f"stop_{mode}",
+        ):
+            stop_k6_workload(active_runtime, mode, active_namespace)
+            st.rerun()
 
         if active_runtime == RUNTIME_K8S:
             phase = get_k6_pod_phase(mode, active_namespace)
             st.caption(f"Pod phase: {phase or 'not found'}")
-        else:
-            status = k6_get_status(api)
-            if status:
-                paused = status.get("paused", False)
-                with bcol2:
-                    label = "Resume" if paused else "Pause"
-                    if st.button(label, key=f"{mode}_pause", use_container_width=True):
-                        k6_patch_status(api, {"paused": not paused})
-                        st.rerun()
 
         recreate_logs = st.session_state.get(f"{mode}_recreate_logs", [])
         if recreate_logs:
             with st.expander("Last job parameters"):
                 st.json(recreate_logs[-1])
-
-    if running and active_runtime == RUNTIME_PODMAN and vus:
-        k6_patch_status(api, {"vus": vus})
 
 
 # ---------------------------------------------------------------------------
@@ -655,28 +603,28 @@ def main() -> None:
             SELECT_URL_DEFAULT,
             key="select_url",
         )
-        metric_name = st.text_input("Metric name prefix", "test_", key="metric_name")
+        metric_name = st.text_input("Metric name prefix", "test", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
 
         st.divider()
         st.header("Insert")
-        insert_vus = st.slider(
-            "Insert VUs",
+        insert_rps = st.slider(
+            "Insert RPS",
             1,
-            INSERT_VUS_SLIDER_MAX,
-            INSERT_VUS_DEFAULT,
-            key="insert_vus",
+            INSERT_RPS_SLIDER_MAX,
+            INSERT_RPS_DEFAULT,
+            key="insert_rps",
         )
 
         st.divider()
         st.header("Select")
-        select_vus = st.slider(
-            "Select VUs",
+        select_rps = st.slider(
+            "Select RPS",
             1,
-            SELECT_VUS_SLIDER_MAX,
-            SELECT_VUS_DEFAULT,
-            key="select_vus",
+            SELECT_RPS_SLIDER_MAX,
+            SELECT_RPS_DEFAULT,
+            key="select_rps",
         )
 
     col_insert, col_select = st.columns(2, gap="large")
@@ -686,14 +634,13 @@ def main() -> None:
         _scenario_panel(
             RUNTIME,
             "insert",
-            K6_INSERT_API,
             write_url,
             select_url,
             K8S_NAMESPACE,
             metric_name,
             num_metrics,
             num_labels,
-            insert_vus,
+            insert_rps,
         )
 
     with col_select:
@@ -701,14 +648,13 @@ def main() -> None:
         _scenario_panel(
             RUNTIME,
             "select",
-            K6_SELECT_API,
             write_url,
             select_url,
             K8S_NAMESPACE,
             metric_name,
             num_metrics,
             num_labels,
-            select_vus,
+            select_rps,
         )
 
     if st.session_state.get("insert_running") or st.session_state.get("select_running"):

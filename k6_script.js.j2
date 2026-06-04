@@ -13,33 +13,41 @@ const SELECT_URL = __ENV.SELECT_URL || '{{ select_url }}';
 export const options = {
   scenarios: {
 {% if mode == 'select' %}
-    up: {
-      executor: 'externally-controlled',
-      exec: 'query_up',
-      vus: {{ vus }},
-      maxVUs: {{ maxVUs }},
-      duration: 0,
-    },
     metric: {
-      executor: 'externally-controlled',
+      executor: 'constant-arrival-rate',
       exec: 'query_metric',
-      vus: {{ vus }},
+      rate: {{ rps }},
+      timeUnit: '1s',
+      duration: '24h',
+      preAllocatedVUs: {{ maxVUs }},
       maxVUs: {{ maxVUs }},
-      duration: 0,
+    },
+    rate: {
+      executor: 'constant-arrival-rate',
+      exec: 'query_rate',
+      rate: {{ rps }},
+      timeUnit: '1s',
+      duration: '24h',
+      preAllocatedVUs: {{ maxVUs }},
+      maxVUs: {{ maxVUs }},
     },
     aggregate: {
-      executor: 'externally-controlled',
+      executor: 'constant-arrival-rate',
       exec: 'query_aggregate',
-      vus: {{ vus }},
+      rate: {{ rps }},
+      timeUnit: '1s',
+      duration: '24h',
+      preAllocatedVUs: {{ maxVUs }},
       maxVUs: {{ maxVUs }},
-      duration: 0,
     },
 {% else %}
     main: {
-      executor: 'externally-controlled',
-      vus: {{ vus }},
+      executor: 'constant-arrival-rate',
+      rate: {{ rps }},
+      timeUnit: '1s',
+      duration: '24h',
+      preAllocatedVUs: {{ maxVUs }},
       maxVUs: {{ maxVUs }},
-      duration: 0,
     },
 {% endif %}
   },
@@ -80,11 +88,11 @@ function run_query(query) {
   check(res, { 'query status is 200': (r) => r.status === 200 });
 }
 
-export function query_up() {
+export function query_metric() {
   run_query(`{{ metric_name }}_0`);
 }
 
-export function query_metric() {
+export function query_rate() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
   run_query(`rate({{ metric_name }}_${metricIdx}[1m])`);
 }
