@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,8 @@ import streamlit as st
 K6_IMAGE = "docker.io/grafana/k6:1.7.1"
 K6_INSERT_CONTAINER = "breaking-bench-k6-insert"
 K6_SELECT_CONTAINER = "breaking-bench-k6-select"
+K6_INSERT_POD = "breaking-bench-k6-insert"
+K6_SELECT_POD = "breaking-bench-k6-select"
 K6_INSERT_PORT = 6565
 K6_SELECT_PORT = 6566
 
@@ -36,6 +40,29 @@ INSERT_VUS_DEFAULT = 1
 SELECT_VUS_DEFAULT = 1
 INSERT_VUS_SLIDER_MAX = 500
 SELECT_VUS_SLIDER_MAX = 10
+RUNTIME_PODMAN = "Podman"
+RUNTIME_K8S = "Kubernetes pod"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--runtime",
+        choices=("k8s", "podman"),
+        default="k8s",
+        help="k6 runner backend",
+    )
+    parser.add_argument(
+        "--k8s-namespace",
+        default="default",
+        help="Kubernetes namespace for k6 pods",
+    )
+    return parser.parse_args()
+
+
+ARGS = _parse_args()
+RUNTIME = RUNTIME_K8S if ARGS.runtime == "k8s" else RUNTIME_PODMAN
+K8S_NAMESPACE = ARGS.k8s_namespace
 
 # ---------------------------------------------------------------------------
 # Session state helpers
@@ -46,6 +73,12 @@ def _init_state() -> None:
     defaults: dict[str, Any] = {
         "insert_running": False,
         "select_running": False,
+        "insert_runtime": RUNTIME,
+        "select_runtime": RUNTIME,
+        "insert_namespace": K8S_NAMESPACE,
+        "select_namespace": K8S_NAMESPACE,
+        "insert_recreate_logs": [],
+        "select_recreate_logs": [],
         "insert_script_config": None,
         "select_script_config": None,
     }
@@ -60,6 +93,7 @@ def _init_state() -> None:
 
 
 _TEMPLATE_PATH = Path(__file__).parent / "k6_script.js.j2"
+_POD_TEMPLATE_PATH = Path(__file__).parent / "k6_pod.yaml.j2"
 _JINJA_ENV = jinja2.Environment(
     loader=jinja2.FileSystemLoader(str(_TEMPLATE_PATH.parent)),
     keep_trailing_newline=True,
@@ -90,10 +124,58 @@ def build_k6_script(
     )
 
 
+def build_k6_pod_manifest(
+    mode: str,
+    name: str,
+    write_url: str,
+    select_url: str,
+) -> str:
+    tmpl = _JINJA_ENV.get_template(_POD_TEMPLATE_PATH.name)
+    return tmpl.render(
+        mode=mode,
+        name=name,
+        image=K6_IMAGE,
+        write_url=write_url,
+        select_url=select_url,
+    )
+
+
 def _script_config(
     metric_name: str, num_metrics: int, num_labels: int
 ) -> tuple[str, int, int]:
     return metric_name, num_metrics, num_labels
+
+
+def _log_recreate(
+    action: str,
+    runtime: str,
+    mode: str,
+    write_url: str,
+    select_url: str,
+    namespace: str,
+    metric_name: str,
+    num_metrics: int,
+    num_labels: int,
+    vus: int,
+) -> None:
+    entry: dict[str, Any] = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "runtime": runtime,
+        "mode": mode,
+        "namespace": namespace if runtime == RUNTIME_K8S else "",
+        "write_url": write_url,
+        "select_url": select_url,
+        "metric_name": metric_name,
+        "metric_variants": num_metrics,
+        "extra_labels": num_labels,
+        "vus": vus,
+    }
+    key = f"{mode}_recreate_logs"
+    logs = list(st.session_state.get(key, []))
+    logs.append(entry)
+    st.session_state[key] = logs[-5:]
+    print(f"breaking-bench recreate params: {entry}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +229,129 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
     st.session_state[running_key] = True
 
 
+def _k8s_name(mode: str) -> str:
+    return K6_INSERT_POD if mode == "insert" else K6_SELECT_POD
+
+
+def _kubectl_namespace_args(namespace: str) -> list[str]:
+    return ["-n", namespace] if namespace else []
+
+
+def _kubectl_delete(namespace: str, name: str) -> None:
+    ns_args = _kubectl_namespace_args(namespace)
+    subprocess.run(
+        ["kubectl", *ns_args, "delete", "pod", name, "--ignore-not-found"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["kubectl", *ns_args, "delete", "configmap", name, "--ignore-not-found"],
+        capture_output=True,
+    )
+
+
+def _apply_script_configmap(namespace: str, name: str, script: str) -> None:
+    ns_args = _kubectl_namespace_args(namespace)
+    tmp = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
+    try:
+        tmp.write(script.encode())
+        tmp.flush()
+        tmp.close()
+        configmap = subprocess.run(
+            [
+                "kubectl",
+                *ns_args,
+                "create",
+                "configmap",
+                name,
+                f"--from-file=script.js={tmp.name}",
+                "--dry-run=client",
+                "-o",
+                "yaml",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["kubectl", *ns_args, "apply", "-f", "-"],
+            input=configmap.stdout,
+            check=True,
+        )
+    finally:
+        tmp.close()
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+def start_k6_pod(
+    mode: str,
+    script: str,
+    write_url: str,
+    select_url: str,
+    namespace: str,
+) -> None:
+    name = _k8s_name(mode)
+    ns_args = _kubectl_namespace_args(namespace)
+
+    _kubectl_delete(namespace, name)
+    _apply_script_configmap(namespace, name, script)
+    manifest = build_k6_pod_manifest(mode, name, write_url, select_url)
+    subprocess.run(
+        ["kubectl", *ns_args, "apply", "-f", "-"],
+        input=manifest.encode(),
+        check=True,
+    )
+    st.session_state[f"{mode}_running"] = True
+    st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
+    st.session_state[f"{mode}_namespace"] = namespace
+
+
+def stop_k6_pod(mode: str, namespace: str) -> None:
+    _kubectl_delete(namespace, _k8s_name(mode))
+    st.session_state[f"{mode}_running"] = False
+    st.session_state[f"{mode}_script_config"] = None
+
+
+def get_k6_pod_phase(mode: str, namespace: str) -> str | None:
+    ns_args = _kubectl_namespace_args(namespace)
+    proc = subprocess.run(
+        [
+            "kubectl",
+            *ns_args,
+            "get",
+            "pod",
+            _k8s_name(mode),
+            "-o",
+            "jsonpath={.status.phase}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout or None
+
+
+def start_k6_workload(
+    runtime: str,
+    mode: str,
+    script: str,
+    write_url: str,
+    select_url: str,
+    namespace: str,
+) -> None:
+    if runtime == RUNTIME_K8S:
+        start_k6_pod(mode, script, write_url, select_url, namespace)
+    else:
+        start_k6(mode, script, write_url, select_url)
+    st.session_state[f"{mode}_runtime"] = runtime
+    st.session_state[f"{mode}_namespace"] = namespace
+
+
 def restart_k6(
+    runtime: str,
     mode: str,
     write_url: str,
     select_url: str,
+    namespace: str,
     metric_name: str,
     num_metrics: int,
     num_labels: int,
@@ -165,7 +366,19 @@ def restart_k6(
         num_labels,
         vus,
     )
-    start_k6(mode, script, write_url, select_url)
+    _log_recreate(
+        "recreate",
+        runtime,
+        mode,
+        write_url,
+        select_url,
+        namespace,
+        metric_name,
+        num_metrics,
+        num_labels,
+        vus,
+    )
+    start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
     st.session_state[f"{mode}_script_config"] = _script_config(
         metric_name,
         num_metrics,
@@ -178,6 +391,13 @@ def stop_k6(mode: str) -> None:
     subprocess.run(["podman", "rm", "-f", container], capture_output=True)
     st.session_state[f"{mode}_running"] = False
     st.session_state[f"{mode}_script_config"] = None
+
+
+def stop_k6_workload(runtime: str, mode: str, namespace: str) -> None:
+    if runtime == RUNTIME_K8S:
+        stop_k6_pod(mode, namespace)
+    else:
+        stop_k6(mode)
 
 
 # ---------------------------------------------------------------------------
@@ -209,19 +429,25 @@ def k6_patch_status(api: str, attrs: dict) -> None:
 # UI helpers
 # ---------------------------------------------------------------------------
 def _scenario_panel(
+    runtime: str,
     mode: str,
     api: str,
     write_url: str,
     select_url: str,
+    namespace: str,
     metric_name: str,
     num_metrics: int,
     num_labels: int,
     vus: int,
 ) -> None:
     running: bool = st.session_state.get(f"{mode}_running", False)
+    active_runtime: str = st.session_state.get(f"{mode}_runtime", runtime)
+    active_namespace: str = st.session_state.get(f"{mode}_namespace", namespace)
     script_config = _script_config(metric_name, num_metrics, num_labels)
 
     if not running:
+        active_runtime = runtime
+        active_namespace = namespace
         if st.button(
             f"Start {mode}",
             type="primary",
@@ -239,15 +465,29 @@ def _scenario_panel(
             )
             with st.expander("Generated k6 script"):
                 st.code(script, language="javascript")
-            start_k6(mode, script, write_url, select_url)
+            _log_recreate(
+                "start",
+                runtime,
+                mode,
+                write_url,
+                select_url,
+                namespace,
+                metric_name,
+                num_metrics,
+                num_labels,
+                vus,
+            )
+            start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
             st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
     else:
         if st.session_state.get(f"{mode}_script_config") != script_config:
             restart_k6(
+                active_runtime,
                 mode,
                 write_url,
                 select_url,
+                active_namespace,
                 metric_name,
                 num_metrics,
                 num_labels,
@@ -256,7 +496,9 @@ def _scenario_panel(
             st.info(f"{mode} restarted with updated metric configuration")
             st.rerun()
 
-        st.success(f"{mode} running")
+        st.success(f"{mode} running via {active_runtime}")
+        if active_runtime != runtime:
+            st.info(f"Stop current {active_runtime} workload before switching runner")
         bcol1, bcol2 = st.columns(2)
         with bcol1:
             if st.button(
@@ -265,19 +507,28 @@ def _scenario_panel(
                 use_container_width=True,
                 key=f"stop_{mode}",
             ):
-                stop_k6(mode)
+                stop_k6_workload(active_runtime, mode, active_namespace)
                 st.rerun()
 
-        status = k6_get_status(api)
-        if status:
-            paused = status.get("paused", False)
-            with bcol2:
-                label = "Resume" if paused else "Pause"
-                if st.button(label, key=f"{mode}_pause", use_container_width=True):
-                    k6_patch_status(api, {"paused": not paused})
-                    st.rerun()
+        if active_runtime == RUNTIME_K8S:
+            phase = get_k6_pod_phase(mode, active_namespace)
+            st.caption(f"Pod phase: {phase or 'not found'}")
+        else:
+            status = k6_get_status(api)
+            if status:
+                paused = status.get("paused", False)
+                with bcol2:
+                    label = "Resume" if paused else "Pause"
+                    if st.button(label, key=f"{mode}_pause", use_container_width=True):
+                        k6_patch_status(api, {"paused": not paused})
+                        st.rerun()
 
-    if running and vus:
+        recreate_logs = st.session_state.get(f"{mode}_recreate_logs", [])
+        if recreate_logs:
+            with st.expander("Last job parameters"):
+                st.json(recreate_logs[-1])
+
+    if running and active_runtime == RUNTIME_PODMAN and vus:
         k6_patch_status(api, {"vus": vus})
 
 
@@ -307,6 +558,9 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Configuration")
+        st.caption(f"Runner: {RUNTIME}")
+        if RUNTIME == RUNTIME_K8S:
+            st.caption(f"Kubernetes namespace: {K8S_NAMESPACE}")
         write_url = st.text_input(
             "Write URL (PRW endpoint)",
             WRITE_URL_DEFAULT,
@@ -346,10 +600,12 @@ def main() -> None:
     with col_insert:
         st.subheader("Insert")
         _scenario_panel(
+            RUNTIME,
             "insert",
             K6_INSERT_API,
             write_url,
             select_url,
+            K8S_NAMESPACE,
             metric_name,
             num_metrics,
             num_labels,
@@ -359,15 +615,21 @@ def main() -> None:
     with col_select:
         st.subheader("Select")
         _scenario_panel(
+            RUNTIME,
             "select",
             K6_SELECT_API,
             write_url,
             select_url,
+            K8S_NAMESPACE,
             metric_name,
             num_metrics,
             num_labels,
             select_vus,
         )
+
+    if st.session_state.get("insert_running") or st.session_state.get("select_running"):
+        time.sleep(2)
+        st.rerun()
 
 
 if __name__ == "__main__":

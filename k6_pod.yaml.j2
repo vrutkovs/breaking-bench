@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ name }}
+  labels:
+    app: breaking-bench
+    mode: {{ mode }}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: k6
+    image: {{ image }}
+    env:
+    - name: WRITE_URL
+      value: {{ write_url | tojson }}
+    - name: SELECT_URL
+      value: {{ select_url | tojson }}
+    - name: K6_PROMETHEUS_RW_SERVER_URL
+      value: {{ write_url | tojson }}
+    - name: K6_PROMETHEUS_RW_TREND_STATS
+      value: "p(99),p(95),avg,sum"
+    volumeMounts:
+    - name: script
+      mountPath: /script.js
+      subPath: script.js
+      readOnly: true
+    args:
+    - run
+    - --out=experimental-prometheus-rw
+    - --tag
+    - testid={{ mode }}
+    - /script.js
+  volumes:
+  - name: script
+    configMap:
+      name: {{ name }}

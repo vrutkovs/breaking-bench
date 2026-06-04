@@ -4,18 +4,19 @@ Streamlit controller for running k6 load tests against VictoriaMetrics.
 
 ![Breaking Bench running insert and select workloads](docs/screenshot.svg)
 
-App starts two Podman containers:
+App starts two k6 workloads through selected runner:
 
 - `breaking-bench-k6-insert` writes generated time series through Prometheus remote write.
 - `breaking-bench-k6-select` runs query range requests against vmselect.
 
-Both containers use `docker.io/grafana/k6:1.7.1` and k6 automatic extension resolution for `k6/x/remotewrite` and `k6/x/faker`.
+Workloads use `docker.io/grafana/k6:1.7.1` and k6 automatic extension resolution for `k6/x/remotewrite` and `k6/x/faker`.
 
 ## Requirements
 
 - Python 3.11+
 - uv
-- Podman
+- Podman for local container runner
+- kubectl for Kubernetes pod runner
 - Network access to VictoriaMetrics `vminsert` and `vmselect`
 
 ## Run
@@ -26,10 +27,19 @@ uv run streamlit run app.py
 
 Open Streamlit URL shown by command output.
 
+Kubernetes pod runner is default. Pass app arguments after Streamlit `--`:
+
+```bash
+uv run streamlit run app.py -- --runtime k8s --k8s-namespace default
+uv run streamlit run app.py -- --runtime podman
+```
+
 ## Configuration
 
 Sidebar fields:
 
+- `Runner`: configured with `--runtime k8s` or `--runtime podman`. Default is `k8s`.
+- `Kubernetes namespace`: configured with `--k8s-namespace`. Default is `default`.
 - `Write URL`: VictoriaMetrics Prometheus remote write endpoint, for example `/insert/0/prometheus/api/v1/write`.
 - `Select URL`: VictoriaMetrics query range endpoint, for example `/select/0/prometheus/api/v1/query_range`.
 - `Metric name prefix`: prefix for generated metrics. Metric names become `<prefix>_<index>`.
@@ -38,16 +48,18 @@ Sidebar fields:
 - `Insert VUs`: insert workload VUs.
 - `Select VUs`: select workload VUs.
 
-Changing metric prefix, variants, or labels while a scenario is running regenerates k6 script and restarts affected container. Changing VUs is applied through k6 REST API without restart.
+Changing metric prefix, variants, or labels while a scenario is running regenerates k6 script and restarts affected workload. Changing VUs is applied through k6 REST API without restart for Podman. Kubernetes pods restart only when script configuration changes.
+
+Each start or automatic restart logs workload parameters to Streamlit output and shows latest values in `Last job parameters`. Running workloads refresh the page every 2 seconds so Kubernetes Pod phase stays current.
 
 ## Controls
 
-- `Start insert`: starts remote-write workload on port `6565`.
-- `Start select`: starts query workload on port `6566`.
-- `Stop`: removes corresponding Podman container.
-- `Pause` / `Resume`: controls running k6 process through REST API.
+- `Start insert`: starts remote-write workload.
+- `Start select`: starts query workload.
+- `Stop`: removes corresponding Podman container or Kubernetes Pod and ConfigMap.
+- `Pause` / `Resume`: controls running Podman k6 process through REST API.
 
-Container names are reused with Podman `--replace`.
+Podman container names are reused with `--replace`. Kubernetes runner creates Pods and ConfigMaps named `breaking-bench-k6-insert` and `breaking-bench-k6-select`.
 
 ## Metrics
 
