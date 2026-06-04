@@ -5,7 +5,6 @@ requires-python = ">=3.11"
 dependencies = [
     "streamlit>=1.35",
     "requests>=2.31",
-    "pandas>=2.0",
 ]
 
 [tool.uv]

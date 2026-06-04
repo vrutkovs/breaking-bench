@@ -10,7 +10,7 @@ import time
 from collections import deque
 from typing import Any
 
-import pandas as pd
+
 import requests
 import streamlit as st
 
@@ -271,7 +271,7 @@ def k6_get_metrics() -> list[dict] | None:
 # ---------------------------------------------------------------------------
 
 
-def prom_query_range(base_url: str, metric_name: str) -> pd.DataFrame | None:
+def prom_query_range(base_url: str, metric_name: str) -> list[dict] | None:
     end = int(time.time())
     start = end - 300  # last 5 min
     try:
@@ -288,7 +288,7 @@ def prom_query_range(base_url: str, metric_name: str) -> pd.DataFrame | None:
         r.raise_for_status()
         results = r.json()["data"]["result"]
         if not results:
-            return pd.DataFrame()
+            return []
         rows = []
         for series in results:
             labels = series["metric"]
@@ -297,7 +297,7 @@ def prom_query_range(base_url: str, metric_name: str) -> pd.DataFrame | None:
                 ts, val = values[-1]
                 row = {**labels, "timestamp": ts, "value": float(val)}
                 rows.append(row)
-        return pd.DataFrame(rows)
+        return rows
     except Exception as e:
         st.warning(f"Prometheus query failed: {e}")
         return None
@@ -309,9 +309,8 @@ def prom_query_range(base_url: str, metric_name: str) -> pd.DataFrame | None:
 
 
 def _stages_editor(key: str, default: list[dict]) -> list[dict]:
-    df = pd.DataFrame(default)
     edited = st.data_editor(
-        df,
+        default,
         num_rows="dynamic",
         key=key,
         column_config={
@@ -320,7 +319,7 @@ def _stages_editor(key: str, default: list[dict]) -> list[dict]:
         },
         use_container_width=True,
     )
-    return edited.to_dict("records")
+    return edited
 
 
 def executor_settings_ui(executor: str) -> dict:
@@ -513,7 +512,7 @@ def main() -> None:
                 }
                 row.update({k: round(v, 3) if isinstance(v, float) else v for k, v in sample.items()})
                 rows.append(row)
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            st.dataframe(rows, use_container_width=True)
         else:
             st.info("No metrics yet.")
 
@@ -523,7 +522,7 @@ def main() -> None:
         st.subheader("Prometheus — written metrics (last 5 min)")
         df_prom = prom_query_range(read_url, metric_name)
         if df_prom is not None:
-            if df_prom.empty:
+            if not df_prom:
                 st.info("No series found yet.")
             else:
                 st.dataframe(df_prom, use_container_width=True)
