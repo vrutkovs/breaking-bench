@@ -269,9 +269,7 @@ def _scenario_panel(
                 st.rerun()
 
         status = k6_get_status(api)
-        if not status:
-            st.info("k6 API not reachable")
-        else:
+        if status:
             paused = status.get("paused", False)
             with bcol2:
                 label = "Resume" if paused else "Pause"
