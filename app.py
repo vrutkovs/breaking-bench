@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import os
-import queue
 import subprocess
 import tempfile
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -25,21 +22,19 @@ K6_INSERT_CONTAINER = "breaking-bench-k6-insert"
 K6_SELECT_CONTAINER = "breaking-bench-k6-select"
 K6_INSERT_PORT = 6565
 K6_SELECT_PORT = 6566
-K6_INSERT_API = f"http://localhost:{K6_INSERT_PORT}/v1"
-K6_SELECT_API = f"http://localhost:{K6_SELECT_PORT}/v1"
-VUS_SLIDER_MAX = 100
+
 WRITE_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
 )
 SELECT_URL_DEFAULT = (
     "http://vmselect.192.168.1.254.nip.io/select/0/prometheus/api/v1/query_range"
 )
+K6_INSERT_API = f"http://localhost:{K6_INSERT_PORT}/v1"
+K6_SELECT_API = f"http://localhost:{K6_SELECT_PORT}/v1"
 
-INSERT_VUS_DEFAULT = 10
-INSERT_RATE_DEFAULT = 10
-
-SELECT_VUS_DEFAULT = 5
-SELECT_MAX_VUS_DEFAULT = 50
+INSERT_VUS_DEFAULT = 1
+SELECT_VUS_DEFAULT = 1
+VUS_SLIDER_MAX = 100
 
 # ---------------------------------------------------------------------------
 # Session state helpers
@@ -50,31 +45,10 @@ def _init_state() -> None:
     defaults: dict[str, Any] = {
         "insert_running": False,
         "select_running": False,
-        "insert_log_queue": queue.Queue(),
-        "select_log_queue": queue.Queue(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
-    if st.session_state.get("write_url"):
-        st.session_state.write_url = _normalize_vmcluster_url(
-            st.session_state.write_url
-        )
-    if st.session_state.get("select_url"):
-        st.session_state.select_url = _normalize_vmcluster_url(
-            st.session_state.select_url
-        )
-
-
-def _normalize_vmcluster_url(url: str) -> str:
-    return (
-        url.replace("/insert/0/api/v1/write", "/insert/0/prometheus/api/v1/write")
-        .replace(
-            "/select/0/api/v1/query_range", "/select/0/prometheus/api/v1/query_range"
-        )
-        .replace("/select/0/api/v1/query", "/select/0/prometheus/api/v1/query")
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -118,25 +92,9 @@ def build_k6_script(
 # ---------------------------------------------------------------------------
 
 
-def _log_reader(container: str, q: queue.Queue, state_key: str) -> None:
-    proc = subprocess.Popen(
-        ["podman", "logs", "-f", container],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    assert proc.stdout
-    for line in proc.stdout:
-        q.put(line.decode(errors="replace").rstrip())
-    proc.wait()
-    q.put(None)  # sentinel
-
-
 def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
-    write_url = _normalize_vmcluster_url(write_url)
-    select_url = _normalize_vmcluster_url(select_url)
     container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
     port = K6_INSERT_PORT if mode == "insert" else K6_SELECT_PORT
-    log_queue_key = f"{mode}_log_queue"
     running_key = f"{mode}_running"
 
     tmp = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
@@ -175,17 +133,6 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
     )
 
     st.session_state[running_key] = True
-    q: queue.Queue = st.session_state[log_queue_key]
-    while not q.empty():
-        try:
-            q.get_nowait()
-        except queue.Empty:
-            break
-
-    t = threading.Thread(
-        target=_log_reader, args=(container, q, running_key), daemon=True
-    )
-    t.start()
 
 
 def stop_k6(mode: str) -> None:
@@ -222,19 +169,6 @@ def k6_patch_status(api: str, attrs: dict) -> None:
 # ---------------------------------------------------------------------------
 # UI helpers
 # ---------------------------------------------------------------------------
-
-
-def _drain_logs(mode: str) -> None:
-    q: queue.Queue = st.session_state[f"{mode}_log_queue"]
-    while True:
-        try:
-            line = q.get_nowait()
-            if line is None:
-                st.session_state[f"{mode}_running"] = False
-        except queue.Empty:
-            break
-
-
 def _scenario_panel(
     mode: str,
     api: str,
@@ -245,7 +179,6 @@ def _scenario_panel(
     num_labels: int,
     vus: int,
 ) -> None:
-    _drain_logs(mode)
     running: bool = st.session_state.get(f"{mode}_running", False)
 
     if not running:
@@ -331,10 +264,8 @@ def main() -> None:
             SELECT_URL_DEFAULT,
             key="select_url",
         )
-        write_url = _normalize_vmcluster_url(write_url)
-        select_url = _normalize_vmcluster_url(select_url)
         metric_name = st.text_input("Metric name", "k6_metric", key="metric_name")
-        num_metrics = st.slider("Metric variants", 1, 20, 10, key="num_metrics")
+        num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
 
         st.divider()
@@ -384,10 +315,6 @@ def main() -> None:
             num_labels,
             select_vus,
         )
-
-    if st.session_state.get("insert_running") or st.session_state.get("select_running"):
-        time.sleep(2)
-        st.rerun()
 
 
 if __name__ == "__main__":
