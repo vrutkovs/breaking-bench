@@ -89,7 +89,9 @@ def build_k6_script(
     )
 
 
-def _script_config(metric_name: str, num_metrics: int, num_labels: int) -> tuple[str, int, int]:
+def _script_config(
+    metric_name: str, num_metrics: int, num_labels: int
+) -> tuple[str, int, int]:
     return metric_name, num_metrics, num_labels
 
 
@@ -126,6 +128,8 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
             f"SELECT_URL={select_url}",
             "-e",
             f"K6_PROMETHEUS_RW_SERVER_URL={write_url}",
+            "-e",
+            "K6_PROMETHEUS_RW_TREND_STATS=p(99),p(95),avg,sum",
             "-v",
             f"{tmp.name}:/script.js:ro",
             K6_IMAGE,
