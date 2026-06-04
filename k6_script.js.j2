@@ -12,12 +12,36 @@ const SELECT_URL = __ENV.SELECT_URL || '{{ select_url }}';
 
 export const options = {
   scenarios: {
+{% if mode == 'select' %}
+    up: {
+      executor: 'externally-controlled',
+      exec: 'query_up',
+      vus: {{ vus }},
+      maxVUs: {{ maxVUs }},
+      duration: 0,
+    },
+    metric: {
+      executor: 'externally-controlled',
+      exec: 'query_metric',
+      vus: {{ vus }},
+      maxVUs: {{ maxVUs }},
+      duration: 0,
+    },
+    aggregate: {
+      executor: 'externally-controlled',
+      exec: 'query_aggregate',
+      vus: {{ vus }},
+      maxVUs: {{ maxVUs }},
+      duration: 0,
+    },
+{% else %}
     main: {
       executor: 'externally-controlled',
       vus: {{ vus }},
       maxVUs: {{ maxVUs }},
       duration: 0,
     },
+{% endif %}
   },
   insecureSkipTLSVerify: true,
 };
@@ -45,6 +69,7 @@ export default function () {
 {% else %}
 function run_query(query) {
   const now = Date.now();
+  // 10 minutes ago
   const start = Math.floor((now - 10 * 60 * 1000) / 1000);
   const end = Math.floor(now / 1000);
   const res = http.post(
@@ -55,10 +80,17 @@ function run_query(query) {
   check(res, { 'query status is 200': (r) => r.status === 200 });
 }
 
-export default function () {
+export function query_up() {
+  run_query(`{{ metric_name }}_0`);
+}
+
+export function query_metric() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  run_query(
-    `sum by(first_name, last_name{% for i in range(num_labels) %}, label_{{ i }}{% endfor %}) (rate({{ metric_name }}_${metricIdx}[5m]))`
-  );
+  run_query(`rate({{ metric_name }}_${metricIdx}[1m])`);
+}
+
+export function query_aggregate() {
+  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
+  run_query(`sum by (last_name) (rate({{ metric_name }}_${metricIdx}[1m]))`);
 }
 {% endif %}
