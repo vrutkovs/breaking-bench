@@ -269,12 +269,16 @@ def _kubectl_run(args: list[str], input_data: bytes | None = None) -> bytes:
     raise RuntimeError(f"kubectl failed: {' '.join(args)}\n{detail}")
 
 
-def _kubectl_delete(namespace: str, name: str) -> None:
+def _kubectl_delete(
+    namespace: str, name: str, include_configmap: bool = True
+) -> None:
     ns_args = _kubectl_namespace_args(namespace)
     subprocess.run(
         ["kubectl", *ns_args, "delete", "pod", name, "--ignore-not-found"],
         capture_output=True,
     )
+    if not include_configmap:
+        return
     subprocess.run(
         ["kubectl", *ns_args, "delete", "configmap", name, "--ignore-not-found"],
         capture_output=True,
@@ -336,9 +340,8 @@ def start_k6_pod(
     name = _k8s_name(mode)
     ns_args = _kubectl_namespace_args(namespace)
 
-    _kubectl_delete(namespace, name)
+    _kubectl_delete(namespace, name, include_configmap=False)
     _kubectl_wait_deleted(namespace, "pod", name)
-    _kubectl_wait_deleted(namespace, "configmap", name)
     _apply_script_configmap(namespace, name, script)
     manifest = build_k6_pod_manifest(mode, name, write_url, select_url)
     _kubectl_run(
