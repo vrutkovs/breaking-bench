@@ -115,6 +115,7 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
             "podman",
             "run",
             "-d",
+            "--replace",
             "--name",
             container,
             "--network",
@@ -251,21 +252,22 @@ def _scenario_panel(
             st.rerun()
 
         st.success(f"{mode} running")
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if st.button(
+                f"Stop {mode}",
+                type="secondary",
+                use_container_width=True,
+                key=f"stop_{mode}",
+            ):
+                stop_k6(mode)
+                st.rerun()
+
         status = k6_get_status(api)
         if not status:
             st.info("k6 API not reachable")
         else:
             paused = status.get("paused", False)
-            bcol1, bcol2 = st.columns(2)
-            with bcol1:
-                if st.button(
-                    f"Stop {mode}",
-                    type="secondary",
-                    use_container_width=True,
-                    key=f"stop_{mode}",
-                ):
-                    stop_k6(mode)
-                    st.rerun()
             with bcol2:
                 label = "Resume" if paused else "Pause"
                 if st.button(label, key=f"{mode}_pause", use_container_width=True):
