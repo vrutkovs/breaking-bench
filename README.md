@@ -46,7 +46,8 @@ Sidebar fields:
 - `Metric variants`: number of metric names to generate.
 - `Extra labels`: number of additional labels named `label_0`, `label_1`, etc.
 - `Insert RPS`: insert workload request rate.
-- `Select RPS`: select workload request rate for each select query scenario.
+- `Fast queries RPS`: request rate for direct metric select queries (`query_metric`).
+- `Slow queries RPS`: request rate for range select queries (`query_rate`).
 
 Changing URLs, metric prefix, variants, labels, or RPS while a scenario is running regenerates k6 script and restarts affected workload.
 

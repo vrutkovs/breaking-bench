@@ -31,9 +31,11 @@ SELECT_URL_DEFAULT = (
     "http://vmselect.192.168.1.254.nip.io/select/0/prometheus/api/v1/query_range"
 )
 INSERT_RPS_DEFAULT = 1
-SELECT_RPS_DEFAULT = 1
-INSERT_RPS_SLIDER_MAX = 5000
-SELECT_RPS_SLIDER_MAX = 10
+SELECT_FAST_RPS_DEFAULT = 1
+SELECT_SLOW_RPS_DEFAULT = 1
+INSERT_RPS_SLIDER_MAX = 3000
+SELECT_FAST_RPS_SLIDER_MAX = 50
+SELECT_SLOW_RPS_SLIDER_MAX = 5
 RUNTIME_PODMAN = "Podman"
 RUNTIME_K8S = "Kubernetes pod"
 
@@ -103,8 +105,10 @@ def build_k6_script(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    rps: int,
+    fast_rps: int,
+    slow_rps: int | None = None,
 ) -> str:
+    slow_rps = slow_rps if slow_rps is not None else fast_rps
     tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
     return tmpl.render(
         mode=mode,
@@ -113,8 +117,11 @@ def build_k6_script(
         metric_name=metric_name,
         num_metrics=num_metrics,
         num_labels=num_labels,
-        rps=rps,
-        maxVUs=max(1, rps),
+        fast_rps=fast_rps,
+        slow_rps=slow_rps,
+        maxVUs=max(1, fast_rps),
+        fastMaxVUs=max(1, fast_rps),
+        slowMaxVUs=max(1, slow_rps),
     )
 
 
@@ -148,7 +155,8 @@ def _workload_config(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    rps: int,
+    fast_rps: int,
+    slow_rps: int | None = None,
 ) -> tuple[Any, ...]:
     return (
         runtime,
@@ -158,7 +166,8 @@ def _workload_config(
         metric_name,
         num_metrics,
         num_labels,
-        rps,
+        fast_rps,
+        slow_rps,
     )
 
 
@@ -172,7 +181,8 @@ def _log_recreate(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    rps: int,
+    fast_rps: int,
+    slow_rps: int | None = None,
 ) -> None:
     entry: dict[str, Any] = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -185,8 +195,10 @@ def _log_recreate(
         "metric_name": metric_name,
         "metric_variants": num_metrics,
         "extra_labels": num_labels,
-        "rps": rps,
+        "fast_rps": fast_rps,
     }
+    if mode == "select":
+        entry["slow_rps"] = slow_rps
     key = f"{mode}_recreate_logs"
     logs = list(st.session_state.get(key, []))
     logs.append(entry)
@@ -392,7 +404,8 @@ def restart_k6(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    rps: int,
+    fast_rps: int,
+    slow_rps: int | None = None,
 ) -> None:
     script = build_k6_script(
         mode,
@@ -401,7 +414,8 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
-        rps,
+        fast_rps,
+        slow_rps,
     )
     _log_recreate(
         "recreate",
@@ -413,7 +427,8 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
-        rps,
+        fast_rps,
+        slow_rps,
     )
     start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
     st.session_state[f"{mode}_script_config"] = _workload_config(
@@ -424,7 +439,8 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
-        rps,
+        fast_rps,
+        slow_rps,
     )
 
 
@@ -454,7 +470,8 @@ def _scenario_panel(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
-    rps: int,
+    fast_rps: int,
+    slow_rps: int | None = None,
 ) -> None:
     running: bool = st.session_state.get(f"{mode}_running", False)
 
@@ -476,7 +493,8 @@ def _scenario_panel(
         metric_name,
         num_metrics,
         num_labels,
-        rps,
+        fast_rps,
+        slow_rps,
     )
     if running and st.session_state.get(f"{mode}_script_config") is None:
         st.session_state[f"{mode}_script_config"] = script_config
@@ -492,7 +510,8 @@ def _scenario_panel(
             metric_name,
             num_metrics,
             num_labels,
-            rps,
+            fast_rps,
+            slow_rps,
         )
         if st.button(
             f"Start {mode}",
@@ -507,7 +526,8 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
-                rps,
+                fast_rps,
+                slow_rps,
             )
             with st.expander("Generated k6 script"):
                 st.code(script, language="javascript")
@@ -521,7 +541,8 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
-                rps,
+                fast_rps,
+                slow_rps,
             )
             start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
             st.session_state[f"{mode}_script_config"] = script_config
@@ -537,7 +558,8 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
-                rps,
+                fast_rps,
+                slow_rps,
             )
             st.info(f"{mode} restarted with updated parameters")
             st.rerun()
@@ -619,12 +641,19 @@ def main() -> None:
 
         st.divider()
         st.header("Select")
-        select_rps = st.slider(
-            "Select RPS",
+        select_fast_rps = st.slider(
+            "Fast queries RPS",
             1,
-            SELECT_RPS_SLIDER_MAX,
-            SELECT_RPS_DEFAULT,
-            key="select_rps",
+            SELECT_FAST_RPS_SLIDER_MAX,
+            SELECT_FAST_RPS_DEFAULT,
+            key="select_fast_rps",
+        )
+        select_slow_rps = st.slider(
+            "Slow queries RPS",
+            1,
+            SELECT_SLOW_RPS_SLIDER_MAX,
+            SELECT_SLOW_RPS_DEFAULT,
+            key="select_slow_rps",
         )
 
     col_insert, col_select = st.columns(2, gap="large")
@@ -654,7 +683,8 @@ def main() -> None:
             metric_name,
             num_metrics,
             num_labels,
-            select_rps,
+            select_fast_rps,
+            select_slow_rps,
         )
 
     if st.session_state.get("insert_running") or st.session_state.get("select_running"):

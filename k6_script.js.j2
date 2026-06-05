@@ -13,37 +13,28 @@ const SELECT_URL = __ENV.SELECT_URL || '{{ select_url }}';
 export const options = {
   scenarios: {
 {% if mode == 'select' %}
-    metric: {
+    fast_queries: {
       executor: 'constant-arrival-rate',
-      exec: 'query_metric',
-      rate: {{ rps }},
+      exec: 'fast_query',
+      rate: {{ fast_rps }},
       timeUnit: '1s',
       duration: '24h',
-      preAllocatedVUs: {{ maxVUs }},
-      maxVUs: {{ maxVUs }},
+      preAllocatedVUs: {{ fastMaxVUs }},
+      maxVUs: {{ fastMaxVUs }},
     },
-    rate: {
+    slow_queries: {
       executor: 'constant-arrival-rate',
       exec: 'query_rate',
-      rate: {{ rps }},
+      rate: {{ slow_rps }},
       timeUnit: '1s',
       duration: '24h',
-      preAllocatedVUs: {{ maxVUs }},
-      maxVUs: {{ maxVUs }},
-    },
-    aggregate: {
-      executor: 'constant-arrival-rate',
-      exec: 'query_aggregate',
-      rate: {{ rps }},
-      timeUnit: '1s',
-      duration: '24h',
-      preAllocatedVUs: {{ maxVUs }},
-      maxVUs: {{ maxVUs }},
+      preAllocatedVUs: {{ slowMaxVUs }},
+      maxVUs: {{ slowMaxVUs }},
     },
 {% else %}
     main: {
       executor: 'constant-arrival-rate',
-      rate: {{ rps }},
+      rate: {{ fast_rps }},
       timeUnit: '1s',
       duration: '24h',
       preAllocatedVUs: {{ maxVUs }},
@@ -88,8 +79,9 @@ function run_query(query) {
   check(res, { 'query status is 200': (r) => r.status === 200 });
 }
 
-export function query_metric() {
-  run_query(`{{ metric_name }}_0`);
+export function fast_query() {
+  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
+  run_query(`{{ metric_name }}_${metricIdx}{first_name="John"}`);
 }
 
 export function query_rate() {
@@ -97,8 +89,4 @@ export function query_rate() {
   run_query(`rate({{ metric_name }}_${metricIdx}[1m])`);
 }
 
-export function query_aggregate() {
-  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  run_query(`sum by (last_name) (rate({{ metric_name }}_${metricIdx}[1m]))`);
-}
 {% endif %}
