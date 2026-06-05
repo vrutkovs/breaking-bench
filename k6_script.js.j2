@@ -54,13 +54,14 @@ export default function () {
     remote.Timeseries(
       {
         __name__: `{{ metric_name }}_${metricIdx}`,
-        first_name: faker.person.firstName(),
+        foo: `bar`,
+        random: faker.person.firstName(),
         last_name: faker.person.lastName(),
 {% for i in range(num_labels) %}
-        label_{{ i }}: faker.person.firstName(),
+        label_{{ i }}: faker.strings.letterN(8),
 {% endfor %}
       },
-      [remote.Sample(faker.numbers.intRange(1, 10000), Date.now())],
+      [remote.Sample(faker.numbers.int16(), Date.now())],
     ),
   ]);
   check(res, { 'insert status is 2xx': (r) => r.status >= 200 && r.status < 300 });
@@ -81,7 +82,7 @@ function run_query(query) {
 
 export function fast_query() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  run_query(`{{ metric_name }}_${metricIdx}{first_name="John"}`);
+  run_query(`{{ metric_name }}_${metricIdx}{foo="bar"}`);
 }
 
 export function query_rate() {
