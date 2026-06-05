@@ -61,10 +61,10 @@ export default function () {
         label_{{ i }}: faker.strings.letterN(8),
 {% endfor %}
       },
-      [remote.Sample(faker.numbers.int16(), Date.now())],
+      [remote.Sample(faker.numbers.intRange(0, 10), Date.now())],
     ),
   ]);
-  check(res, { 'insert status is 2xx': (r) => r.status >= 200 && r.status < 300 });
+  check(res, { 'insert status is 204': (r) => r.status === 204 });
 }
 {% else %}
 function run_query(query) {
@@ -82,7 +82,7 @@ function run_query(query) {
 
 export function fast_query() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  run_query(`{{ metric_name }}_${metricIdx}{foo="bar"}`);
+  run_query(`{{ metric_name }}_${metricIdx}\{foo="bar"\}`);
 }
 
 export function query_rate() {
