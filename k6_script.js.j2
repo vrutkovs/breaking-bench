@@ -55,8 +55,7 @@ export default function () {
       {
         __name__: `{{ metric_name }}_${metricIdx}`,
         foo: `bar`,
-        random: faker.person.firstName(),
-        last_name: faker.person.lastName(),
+        random: faker.strings.letterN(8),
 {% for i in range(num_labels) %}
         label_{{ i }}: faker.strings.letterN(8),
 {% endfor %}
