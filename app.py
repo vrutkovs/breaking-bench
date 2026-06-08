@@ -105,6 +105,15 @@ _JINJA_ENV = jinja2.Environment(
 )
 
 
+def _parse_duration_s(d: str) -> int:
+    d = d.strip()
+    if d.endswith('m'):
+        return int(d[:-1]) * 60
+    if d.endswith('s'):
+        return int(d[:-1])
+    return int(d)
+
+
 def build_k6_script(
     mode: str,
     write_url: str,
@@ -135,9 +144,9 @@ def build_k6_script(
         select_timeout=select_timeout,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
-        maxVUs=max(1, fast_rps),
-        fastMaxVUs=max(1, fast_rps),
-        slowMaxVUs=max(1, slow_rps),
+        maxVUs=max(1, fast_rps * _parse_duration_s(insert_timeout)),
+        fastMaxVUs=max(1, fast_rps * _parse_duration_s(select_timeout)),
+        slowMaxVUs=max(1, slow_rps * _parse_duration_s(select_timeout)),
     )
 
 
@@ -482,7 +491,9 @@ def restart_k6(
         fast_rps,
         slow_rps,
     )
-    start_k6_workload(runtime, mode, script, write_url, select_url, metrics_url, namespace)
+    start_k6_workload(
+        runtime, mode, script, write_url, select_url, metrics_url, namespace
+    )
     st.session_state[f"{mode}_script_config"] = _workload_config(
         runtime,
         write_url,
@@ -620,7 +631,9 @@ def _scenario_panel(
                 fast_rps,
                 slow_rps,
             )
-            start_k6_workload(runtime, mode, script, write_url, select_url, metrics_url, namespace)
+            start_k6_workload(
+                runtime, mode, script, write_url, select_url, metrics_url, namespace
+            )
             st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
     else:
