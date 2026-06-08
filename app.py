@@ -39,6 +39,8 @@ SELECT_SLOW_RPS_DEFAULT = 1
 INSERT_RPS_SLIDER_MAX = 3000
 SELECT_FAST_RPS_SLIDER_MAX = 50
 SELECT_SLOW_RPS_SLIDER_MAX = 5
+CARDINALITY_DEFAULT = 1000
+CARDINALITY_SLIDER_MAX = 1000000
 RUNTIME_PODMAN = "Podman"
 RUNTIME_K8S = "Kubernetes pod"
 
@@ -109,6 +111,7 @@ def build_k6_script(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
+    cardinality: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> str:
@@ -123,6 +126,7 @@ def build_k6_script(
         metric_name=metric_name,
         num_metrics=num_metrics,
         num_labels=num_labels,
+        cardinality=cardinality,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
         maxVUs=max(1, fast_rps),
@@ -164,6 +168,7 @@ def _workload_config(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
+    cardinality: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> tuple[Any, ...]:
@@ -176,6 +181,7 @@ def _workload_config(
         metric_name,
         num_metrics,
         num_labels,
+        cardinality,
         fast_rps,
         slow_rps,
     )
@@ -192,6 +198,7 @@ def _log_recreate(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
+    cardinality: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -207,6 +214,7 @@ def _log_recreate(
         "metric_name": metric_name,
         "metric_variants": num_metrics,
         "extra_labels": num_labels,
+        "cardinality": cardinality,
         "fast_rps": fast_rps,
     }
     if mode == "select":
@@ -423,6 +431,7 @@ def restart_k6(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
+    cardinality: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -434,6 +443,7 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
+        cardinality,
         fast_rps,
         slow_rps,
     )
@@ -448,6 +458,7 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
+        cardinality,
         fast_rps,
         slow_rps,
     )
@@ -461,6 +472,7 @@ def restart_k6(
         metric_name,
         num_metrics,
         num_labels,
+        cardinality,
         fast_rps,
         slow_rps,
     )
@@ -493,6 +505,7 @@ def _scenario_panel(
     metric_name: str,
     num_metrics: int,
     num_labels: int,
+    cardinality: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -517,6 +530,7 @@ def _scenario_panel(
         metric_name,
         num_metrics,
         num_labels,
+        cardinality,
         fast_rps,
         slow_rps,
     )
@@ -535,6 +549,7 @@ def _scenario_panel(
             metric_name,
             num_metrics,
             num_labels,
+            cardinality,
             fast_rps,
             slow_rps,
         )
@@ -552,6 +567,7 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
+                cardinality,
                 fast_rps,
                 slow_rps,
             )
@@ -568,6 +584,7 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
+                cardinality,
                 fast_rps,
                 slow_rps,
             )
@@ -586,6 +603,7 @@ def _scenario_panel(
                 metric_name,
                 num_metrics,
                 num_labels,
+                cardinality,
                 fast_rps,
                 slow_rps,
             )
@@ -661,6 +679,13 @@ def main() -> None:
         metric_name = st.text_input("Metric name prefix", "test", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
+        cardinality = st.slider(
+            "Cardinality (distinct label values)",
+            1,
+            CARDINALITY_SLIDER_MAX,
+            CARDINALITY_DEFAULT,
+            key="cardinality",
+        )
         insert_rps = st.slider(
             "Insert RPS",
             1,
@@ -697,6 +722,7 @@ def main() -> None:
             metric_name,
             num_metrics,
             num_labels,
+            cardinality,
             insert_rps,
         )
 
@@ -712,6 +738,7 @@ def main() -> None:
             metric_name,
             num_metrics,
             num_labels,
+            cardinality,
             select_fast_rps,
             select_slow_rps,
         )

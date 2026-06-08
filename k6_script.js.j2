@@ -66,6 +66,7 @@ export function setup() {
 {% endif %}
         num_metrics: '{{ num_metrics }}',
         num_labels: '{{ num_labels }}',
+        cardinality: '{{ cardinality }}',
       },
       [remote.Sample(1, Date.now())],
     ),
@@ -82,9 +83,9 @@ export default function () {
       {
         __name__: `{{ metric_name }}_${metricIdx}`,
         foo: `bar`,
-        random: faker.strings.letterN(8),
+        random: `${faker.numbers.intRange(0, {{ cardinality - 1 }})}`,
 {% for i in range(num_labels) %}
-        label_{{ i }}: faker.strings.letterN(8),
+        label_{{ i }}: `${faker.numbers.intRange(0, {{ cardinality - 1 }})}`,
 {% endfor %}
       },
       [remote.Sample(faker.numbers.intRange(0, 10), Date.now())],
