@@ -30,6 +30,9 @@ WRITE_URL_DEFAULT = (
 SELECT_URL_DEFAULT = (
     "http://vmselect.192.168.1.254.nip.io/select/0/prometheus/api/v1/query_range"
 )
+METRICS_URL_DEFAULT = (
+    "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
+)
 INSERT_RPS_DEFAULT = 1
 SELECT_FAST_RPS_DEFAULT = 1
 SELECT_SLOW_RPS_DEFAULT = 1
@@ -102,18 +105,21 @@ def build_k6_script(
     mode: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     metric_name: str,
     num_metrics: int,
     num_labels: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> str:
-    slow_rps = slow_rps if slow_rps is not None else fast_rps
+    fast_rps = fast_rps if fast_rps else 1
+    slow_rps = (slow_rps if slow_rps is not None else fast_rps) or 1
     tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
     return tmpl.render(
         mode=mode,
         write_url=write_url,
         select_url=select_url,
+        metrics_url=metrics_url,
         metric_name=metric_name,
         num_metrics=num_metrics,
         num_labels=num_labels,
@@ -130,6 +136,7 @@ def build_k6_pod_manifest(
     name: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
 ) -> str:
     tmpl = _JINJA_ENV.get_template(_POD_TEMPLATE_PATH.name)
     return tmpl.render(
@@ -138,6 +145,7 @@ def build_k6_pod_manifest(
         image=K6_IMAGE,
         write_url=write_url,
         select_url=select_url,
+        metrics_url=metrics_url,
     )
 
 
@@ -151,6 +159,7 @@ def _workload_config(
     runtime: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     namespace: str,
     metric_name: str,
     num_metrics: int,
@@ -163,6 +172,7 @@ def _workload_config(
         namespace,
         write_url,
         select_url,
+        metrics_url,
         metric_name,
         num_metrics,
         num_labels,
@@ -177,6 +187,7 @@ def _log_recreate(
     mode: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     namespace: str,
     metric_name: str,
     num_metrics: int,
@@ -192,6 +203,7 @@ def _log_recreate(
         "namespace": namespace if runtime == RUNTIME_K8S else "",
         "write_url": write_url,
         "select_url": select_url,
+        "metrics_url": metrics_url,
         "metric_name": metric_name,
         "metric_variants": num_metrics,
         "extra_labels": num_labels,
@@ -211,7 +223,9 @@ def _log_recreate(
 # ---------------------------------------------------------------------------
 
 
-def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
+def start_k6(
+    mode: str, script: str, write_url: str, select_url: str, metrics_url: str
+) -> None:
     container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
     running_key = f"{mode}_running"
 
@@ -237,7 +251,9 @@ def start_k6(mode: str, script: str, write_url: str, select_url: str) -> None:
             "-e",
             f"SELECT_URL={select_url}",
             "-e",
-            f"K6_PROMETHEUS_RW_SERVER_URL={write_url}",
+            f"METRICS_URL={metrics_url}",
+            "-e",
+            f"K6_PROMETHEUS_RW_SERVER_URL={metrics_url}",
             "-e",
             "K6_PROMETHEUS_RW_TREND_STATS=p(99),p(95),avg,sum",
             "-v",
@@ -335,6 +351,7 @@ def start_k6_pod(
     script: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     namespace: str,
 ) -> None:
     name = _k8s_name(mode)
@@ -343,7 +360,7 @@ def start_k6_pod(
     _kubectl_delete(namespace, name, include_configmap=False)
     _kubectl_wait_deleted(namespace, "pod", name)
     _apply_script_configmap(namespace, name, script)
-    manifest = build_k6_pod_manifest(mode, name, write_url, select_url)
+    manifest = build_k6_pod_manifest(mode, name, write_url, select_url, metrics_url)
     _kubectl_run(
         ["kubectl", *ns_args, "apply", "-f", "-"],
         input_data=manifest.encode(),
@@ -385,12 +402,13 @@ def start_k6_workload(
     script: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     namespace: str,
 ) -> None:
     if runtime == RUNTIME_K8S:
-        start_k6_pod(mode, script, write_url, select_url, namespace)
+        start_k6_pod(mode, script, write_url, select_url, metrics_url, namespace)
     else:
-        start_k6(mode, script, write_url, select_url)
+        start_k6(mode, script, write_url, select_url, metrics_url)
     st.session_state[f"{mode}_runtime"] = runtime
     st.session_state[f"{mode}_namespace"] = namespace
 
@@ -400,6 +418,7 @@ def restart_k6(
     mode: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     namespace: str,
     metric_name: str,
     num_metrics: int,
@@ -411,6 +430,7 @@ def restart_k6(
         mode,
         write_url,
         select_url,
+        metrics_url,
         metric_name,
         num_metrics,
         num_labels,
@@ -423,6 +443,7 @@ def restart_k6(
         mode,
         write_url,
         select_url,
+        metrics_url,
         namespace,
         metric_name,
         num_metrics,
@@ -430,11 +451,12 @@ def restart_k6(
         fast_rps,
         slow_rps,
     )
-    start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
+    start_k6_workload(runtime, mode, script, write_url, select_url, metrics_url, namespace)
     st.session_state[f"{mode}_script_config"] = _workload_config(
         runtime,
         write_url,
         select_url,
+        metrics_url,
         namespace,
         metric_name,
         num_metrics,
@@ -466,6 +488,7 @@ def _scenario_panel(
     mode: str,
     write_url: str,
     select_url: str,
+    metrics_url: str,
     namespace: str,
     metric_name: str,
     num_metrics: int,
@@ -489,6 +512,7 @@ def _scenario_panel(
         active_runtime,
         write_url,
         select_url,
+        metrics_url,
         active_namespace,
         metric_name,
         num_metrics,
@@ -506,6 +530,7 @@ def _scenario_panel(
             runtime,
             write_url,
             select_url,
+            metrics_url,
             namespace,
             metric_name,
             num_metrics,
@@ -523,6 +548,7 @@ def _scenario_panel(
                 mode,
                 write_url,
                 select_url,
+                metrics_url,
                 metric_name,
                 num_metrics,
                 num_labels,
@@ -537,6 +563,7 @@ def _scenario_panel(
                 mode,
                 write_url,
                 select_url,
+                metrics_url,
                 namespace,
                 metric_name,
                 num_metrics,
@@ -544,7 +571,7 @@ def _scenario_panel(
                 fast_rps,
                 slow_rps,
             )
-            start_k6_workload(runtime, mode, script, write_url, select_url, namespace)
+            start_k6_workload(runtime, mode, script, write_url, select_url, metrics_url, namespace)
             st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
     else:
@@ -554,6 +581,7 @@ def _scenario_panel(
                 mode,
                 write_url,
                 select_url,
+                metrics_url,
                 active_namespace,
                 metric_name,
                 num_metrics,
@@ -625,6 +653,11 @@ def main() -> None:
             SELECT_URL_DEFAULT,
             key="select_url",
         )
+        metrics_url = st.text_input(
+            "Metrics URL (k6 metrics PRW endpoint)",
+            METRICS_URL_DEFAULT,
+            key="metrics_url",
+        )
         metric_name = st.text_input("Metric name prefix", "test", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
@@ -659,6 +692,7 @@ def main() -> None:
             "insert",
             write_url,
             select_url,
+            metrics_url,
             K8S_NAMESPACE,
             metric_name,
             num_metrics,
@@ -673,6 +707,7 @@ def main() -> None:
             "select",
             write_url,
             select_url,
+            metrics_url,
             K8S_NAMESPACE,
             metric_name,
             num_metrics,

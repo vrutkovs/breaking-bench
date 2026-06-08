@@ -15,8 +15,10 @@ spec:
       value: {{ write_url | tojson }}
     - name: SELECT_URL
       value: {{ select_url | tojson }}
+    - name: METRICS_URL
+      value: {{ metrics_url | tojson }}
     - name: K6_PROMETHEUS_RW_SERVER_URL
-      value: {{ write_url | tojson }}
+      value: {{ metrics_url | tojson }}
     - name: K6_PROMETHEUS_RW_TREND_STATS
       value: "p(99),p(95),avg,sum"
     volumeMounts:

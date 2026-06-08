@@ -7,8 +7,9 @@ import { check } from 'k6';
 import { check } from 'k6';
 {% endif %}
 
-const WRITE_URL  = __ENV.WRITE_URL  || '{{ write_url }}';
-const SELECT_URL = __ENV.SELECT_URL || '{{ select_url }}';
+const WRITE_URL   = __ENV.WRITE_URL   || '{{ write_url }}';
+const SELECT_URL  = __ENV.SELECT_URL  || '{{ select_url }}';
+const METRICS_URL = __ENV.METRICS_URL || '{{ metrics_url }}';
 
 export const options = {
   scenarios: {
@@ -27,7 +28,7 @@ export const options = {
 {% if slow_rps > 0 %}
     slow_queries: {
       executor: 'constant-arrival-rate',
-      exec: 'query_rate',
+      exec: 'slow_query',
       rate: {{ slow_rps }},
       timeUnit: '1s',
       duration: '24h',
@@ -50,7 +51,7 @@ export const options = {
 };
 
 export function setup() {
-  const configClient = new remote.Client({ url: WRITE_URL });
+  const configClient = new remote.Client({ url: METRICS_URL });
   configClient.store([
     remote.Timeseries(
       {
@@ -93,26 +94,37 @@ export default function () {
 }
 {% else %}
 function run_query(query) {
-  const now = Date.now();
-  // 10 minutes ago
-  const start = Math.floor((now - 10 * 60 * 1000) / 1000);
-  const end = Math.floor(now / 1000);
+
+}
+
+export function fast_query() {
+  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
+  // Align end to step boundary so repeated calls within the same window
+  // produce identical (query, start, end, step) tuples — maximising cache hits.
+  const step = 15;
+  const end = Math.floor(Date.now() / (step * 1000)) * step;
+  const start = end - 5 * 60;
   const res = http.post(
     SELECT_URL,
-    { query: query, start: start, end: end, step: '15s' },
+    { query: `{{ metric_name }}_${metricIdx}\{foo="bar"\}`, start: start, end: end, step: `${step}s` },
     { responseType: 'none' },
   );
   check(res, { 'query status is 200': (r) => r.status === 200 });
 }
 
-export function fast_query() {
-  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  run_query(`{{ metric_name }}_${metricIdx}\{foo="bar"\}`);
-}
+export function slow_query() {
 
-export function query_rate() {
-  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  run_query(`rate({{ metric_name }}_${metricIdx}[1m])`);
-}
 
+  const now = Date.now();
+  // 10 minutes ago
+  const start = Math.floor((now - 10 * 60 * 1000) / 1000);
+  const end = Math.floor(now / 1000);
+  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
+  const res = http.post(
+    SELECT_URL,
+    { query: `{{ metric_name }}_${metricIdx}\{foo="bar"\}`, start: start, end: end, step: '15s' },
+    { responseType: 'none' },
+  );
+  check(res, { 'query status is 200': (r) => r.status === 200 });
+}
 {% endif %}
