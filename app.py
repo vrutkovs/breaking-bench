@@ -35,7 +35,7 @@ METRICS_URL_DEFAULT = (
 INSERT_RPS_DEFAULT = 1
 INSERT_TIMEOUT_DEFAULT = "30s"
 SELECT_TIMEOUT_DEFAULT = "30s"
-MAX_VUS = 100
+MAX_VUS = 200
 SELECT_FAST_RPS_DEFAULT = 1
 SELECT_SLOW_RPS_DEFAULT = 1
 INSERT_RPS_SLIDER_MAX = 3000
@@ -114,6 +114,7 @@ def build_k6_script(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
+    replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> str:
@@ -133,9 +134,9 @@ def build_k6_script(
         select_timeout=select_timeout,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
-        maxVUs=MAX_VUS,
-        fastMaxVUs=MAX_VUS,
-        slowMaxVUs=MAX_VUS,
+        maxVUs=MAX_VUS * replicas,
+        fastMaxVUs=MAX_VUS * replicas,
+        slowMaxVUs=MAX_VUS * replicas,
     )
 
 
@@ -461,6 +462,7 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
+        replicas,
         fast_rps,
         slow_rps,
     )
@@ -590,6 +592,7 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
+                replicas,
                 fast_rps,
                 slow_rps,
             )
