@@ -95,10 +95,12 @@ export default function () {
 {% else %}
 export function fast_query() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  // Align end to step boundary so repeated calls within the same window
-  // produce identical (query, start, end, step) tuples — maximising cache hits.
+  // Shift the window past VM's cacheTimestampOffset (default 5m) so the full
+  // response cache is used. Align end to step boundary for stable cache keys.
   const step = 15;
-  const end = Math.floor(Date.now() / (step * 1000)) * step;
+  const cacheOffset = 5 * 60; // VM default search.cacheTimestampOffset
+  const now = Math.floor(Date.now() / 1000);
+  const end = Math.floor((now - cacheOffset) / step) * step;
   const start = end - 5 * 60;
   const res = http.post(
     SELECT_URL,
