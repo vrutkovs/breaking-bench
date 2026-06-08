@@ -13,6 +13,7 @@ const SELECT_URL = __ENV.SELECT_URL || '{{ select_url }}';
 export const options = {
   scenarios: {
 {% if mode == 'select' %}
+{% if fast_rps > 0 %}
     fast_queries: {
       executor: 'constant-arrival-rate',
       exec: 'fast_query',
@@ -22,6 +23,8 @@ export const options = {
       preAllocatedVUs: {{ fastMaxVUs }},
       maxVUs: {{ fastMaxVUs }},
     },
+{% endif %}
+{% if slow_rps > 0 %}
     slow_queries: {
       executor: 'constant-arrival-rate',
       exec: 'query_rate',
@@ -31,6 +34,7 @@ export const options = {
       preAllocatedVUs: {{ slowMaxVUs }},
       maxVUs: {{ slowMaxVUs }},
     },
+{% endif %}
 {% else %}
     main: {
       executor: 'constant-arrival-rate',
