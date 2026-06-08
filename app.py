@@ -34,6 +34,8 @@ METRICS_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
 )
 INSERT_RPS_DEFAULT = 1
+INSERT_TIMEOUT_DEFAULT = "30s"
+SELECT_TIMEOUT_DEFAULT = "30s"
 SELECT_FAST_RPS_DEFAULT = 1
 SELECT_SLOW_RPS_DEFAULT = 1
 INSERT_RPS_SLIDER_MAX = 3000
@@ -112,6 +114,8 @@ def build_k6_script(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    insert_timeout: str,
+    select_timeout: str,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> str:
@@ -127,6 +131,8 @@ def build_k6_script(
         num_metrics=num_metrics,
         num_labels=num_labels,
         cardinality=cardinality,
+        insert_timeout=insert_timeout,
+        select_timeout=select_timeout,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
         maxVUs=max(1, fast_rps),
@@ -169,6 +175,8 @@ def _workload_config(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    insert_timeout: str,
+    select_timeout: str,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> tuple[Any, ...]:
@@ -182,6 +190,8 @@ def _workload_config(
         num_metrics,
         num_labels,
         cardinality,
+        insert_timeout,
+        select_timeout,
         fast_rps,
         slow_rps,
     )
@@ -199,6 +209,8 @@ def _log_recreate(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    insert_timeout: str,
+    select_timeout: str,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -215,6 +227,8 @@ def _log_recreate(
         "metric_variants": num_metrics,
         "extra_labels": num_labels,
         "cardinality": cardinality,
+        "insert_timeout": insert_timeout,
+        "select_timeout": select_timeout,
         "fast_rps": fast_rps,
     }
     if mode == "select":
@@ -432,6 +446,8 @@ def restart_k6(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    insert_timeout: str,
+    select_timeout: str,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -444,6 +460,8 @@ def restart_k6(
         num_metrics,
         num_labels,
         cardinality,
+        insert_timeout,
+        select_timeout,
         fast_rps,
         slow_rps,
     )
@@ -459,6 +477,8 @@ def restart_k6(
         num_metrics,
         num_labels,
         cardinality,
+        insert_timeout,
+        select_timeout,
         fast_rps,
         slow_rps,
     )
@@ -473,6 +493,8 @@ def restart_k6(
         num_metrics,
         num_labels,
         cardinality,
+        insert_timeout,
+        select_timeout,
         fast_rps,
         slow_rps,
     )
@@ -506,6 +528,8 @@ def _scenario_panel(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    insert_timeout: str,
+    select_timeout: str,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -531,6 +555,8 @@ def _scenario_panel(
         num_metrics,
         num_labels,
         cardinality,
+        insert_timeout,
+        select_timeout,
         fast_rps,
         slow_rps,
     )
@@ -550,6 +576,8 @@ def _scenario_panel(
             num_metrics,
             num_labels,
             cardinality,
+            insert_timeout,
+            select_timeout,
             fast_rps,
             slow_rps,
         )
@@ -568,6 +596,8 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 cardinality,
+                insert_timeout,
+                select_timeout,
                 fast_rps,
                 slow_rps,
             )
@@ -585,6 +615,8 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 cardinality,
+                insert_timeout,
+                select_timeout,
                 fast_rps,
                 slow_rps,
             )
@@ -604,6 +636,8 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 cardinality,
+                insert_timeout,
+                select_timeout,
                 fast_rps,
                 slow_rps,
             )
@@ -686,6 +720,16 @@ def main() -> None:
             CARDINALITY_DEFAULT,
             key="cardinality",
         )
+        insert_timeout = st.text_input(
+            "Insert timeout (e.g. 30s, 1m)",
+            INSERT_TIMEOUT_DEFAULT,
+            key="insert_timeout",
+        )
+        select_timeout = st.text_input(
+            "Select timeout (e.g. 30s, 1m)",
+            SELECT_TIMEOUT_DEFAULT,
+            key="select_timeout",
+        )
         insert_rps = st.slider(
             "Insert RPS",
             1,
@@ -723,6 +767,8 @@ def main() -> None:
             num_metrics,
             num_labels,
             cardinality,
+            insert_timeout,
+            select_timeout,
             insert_rps,
         )
 
@@ -739,6 +785,8 @@ def main() -> None:
             num_metrics,
             num_labels,
             cardinality,
+            insert_timeout,
+            select_timeout,
             select_fast_rps,
             select_slow_rps,
         )

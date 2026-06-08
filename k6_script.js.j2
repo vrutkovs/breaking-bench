@@ -74,7 +74,7 @@ export function setup() {
 }
 
 {% if mode == 'insert' %}
-const client = new remote.Client({ url: WRITE_URL });
+const client = new remote.Client({ url: WRITE_URL, timeout: '{{ insert_timeout }}' });
 
 export default function () {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
@@ -106,7 +106,7 @@ export function fast_query() {
   const res = http.post(
     SELECT_URL,
     { query: `{{ metric_name }}_${metricIdx}\{foo="bar"\}`, start: start, end: end, step: `${step}s` },
-    { responseType: 'none' },
+    { timeout: '{{ select_timeout }}', responseType: 'none' },
   );
   check(res, { 'query status is 200': (r) => r.status === 200 });
 }
@@ -120,7 +120,7 @@ export function slow_query() {
   const res = http.post(
     SELECT_URL,
     { query: `{{ metric_name }}_${metricIdx}\{foo="bar"\}`, start: start, end: end, step: '15s' },
-    { responseType: 'none' },
+    { timeout: '{{ select_timeout }}', responseType: 'none' },
   );
   check(res, { 'query status is 200': (r) => r.status === 200 });
 }
