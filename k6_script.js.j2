@@ -93,10 +93,6 @@ export default function () {
   check(res, { 'insert status is 204': (r) => r.status === 204 });
 }
 {% else %}
-function run_query(query) {
-
-}
-
 export function fast_query() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
   // Align end to step boundary so repeated calls within the same window
@@ -113,8 +109,6 @@ export function fast_query() {
 }
 
 export function slow_query() {
-
-
   const now = Date.now();
   // 10 minutes ago
   const start = Math.floor((now - 10 * 60 * 1000) / 1000);

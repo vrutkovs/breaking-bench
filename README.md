@@ -21,7 +21,11 @@ Insert workload writes custom metrics with labels:
 
 Select workload reads custom metrics from VictoriaMetrics.
 
-"Fast" query is fetching cachable queries - `<prefix>_<random ID>{foo="bar"}`. "Slow" query is more resource intensive - `rate(<prefix>_<random ID>[1m])`.
+"Fast" queries use timestamp alignment (end rounded to 15 s boundary, 5 min window) so repeated requests within the same window hit the VictoriaMetrics query cache. Query pattern: `<prefix>_<random ID>{foo="bar"}`.
+
+"Slow" queries use rolling timestamps so results are always fresh. Query pattern: `rate(<prefix>_<random ID>[1m])`.
+
+A `breaking_bench_config` metric is written to `Metrics URL` at startup with labels describing current workload parameters.
 
 ## Requirements
 
@@ -54,20 +58,21 @@ Sidebar fields:
 - `Kubernetes namespace`: configured with `--k8s-namespace`. Default is `default`.
 - `Write URL`: VictoriaMetrics Prometheus remote write endpoint, for example `/insert/0/prometheus/api/v1/write`.
 - `Select URL`: VictoriaMetrics query range endpoint, for example `/select/0/prometheus/api/v1/query_range`.
+- `Metrics URL`: Prometheus remote write endpoint for k6 internal metrics and `breaking_bench_config`. Defaults to same value as `Write URL`. Set to a separate VictoriaMetrics instance to keep benchmark telemetry isolated from test data.
 - `Metric name prefix`: prefix for generated metrics. Metric names become `<prefix>_<index>`.
 - `Metric variants`: number of metric names to generate.
 - `Extra labels`: number of additional labels named `label_0`, `label_1`, etc.
 - `Insert RPS`: insert workload request rate.
-- `Fast queries RPS`: request rate for direct metric select queries (`query_metric`).
-- `Slow queries RPS`: request rate for range select queries (`query_rate`).
+- `Fast queries RPS`: request rate for cache-friendly metric select queries (`fast_query`).
+- `Slow queries RPS`: request rate for range select queries (`slow_query`).
 
-Changing URLs, metric prefix, variants, labels, or RPS while a scenario is running regenerates k6 script and restarts affected workload.
+Changing any URL, metric prefix, variants, labels, or RPS while a scenario is running regenerates k6 script and restarts affected workload.
 
 Generated k6 scripts use `constant-arrival-rate` scenarios:
 
 - insert: `main` at `Insert RPS`.
-- select: `fast_queries` runs `query_metric` at `Fast queries RPS`.
-- select: `slow_queries` runs `query_rate` at `Slow queries RPS`.
+- select: `fast_queries` runs `fast_query` at `Fast queries RPS`.
+- select: `slow_queries` runs `slow_query` at `Slow queries RPS`.
 
 Each start or automatic restart logs workload parameters to Streamlit output and shows latest values in `Last job parameters`. Logged rate fields are `fast_rps` and, for select, `slow_rps`. Running workloads refresh the page every 2 seconds so Kubernetes Pod phase stays current.
 
