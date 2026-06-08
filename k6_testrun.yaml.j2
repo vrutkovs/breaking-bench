@@ -12,6 +12,20 @@ spec:
       name: {{ name }}
       file: script.js
   runner:
+    metadata:
+      labels:
+        app: breaking-bench
+        mode: {{ mode }}
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: breaking-bench
+                mode: {{ mode }}
+            topologyKey: kubernetes.io/hostname
     image: {{ image }}
     env:
     - name: WRITE_URL
