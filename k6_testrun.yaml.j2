@@ -24,8 +24,6 @@ spec:
       value: {{ metrics_url | tojson }}
     - name: K6_PROMETHEUS_RW_TREND_STATS
       value: "p(99),p(95),avg,sum"
-  arguments: >-
-    --out=experimental-prometheus-rw
-    --discard-response-bodies=true
-    --no-vu-connection-reuse=true
-    --tag testid={{ mode }}
+    - name: K6_OUT
+      value: "experimental-prometheus-rw"
+  arguments: --tag testid={{ mode }}

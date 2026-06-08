@@ -250,15 +250,22 @@ def _log_recreate(
     print(f"breaking-bench recreate params: {entry}", flush=True)
 
 
-def _ensure_k6_operator() -> None:
-    """Install k6 operator via bundle.yaml if TestRun CRD is absent."""
-    proc = subprocess.run(
-        ["kubectl", "get", "crd", "testruns.k6.io"],
-        capture_output=True,
-    )
-    if proc.returncode == 0:
-        return
-    _kubectl_run(["kubectl", "apply", "-f", K6_OPERATOR_BUNDLE])
+@st.cache_resource
+def _ensure_k6_operator() -> str | None:
+    """Install k6 operator via bundle.yaml if TestRun CRD is absent. Runs once per process.
+    Returns an error message string on failure, None on success."""
+    try:
+        proc = subprocess.run(
+            ["kubectl", "get", "crd", "testruns.k6.io"],
+            capture_output=True,
+            timeout=15,
+        )
+        if proc.returncode == 0:
+            return None
+        _kubectl_run(["kubectl", "apply", "-f", K6_OPERATOR_BUNDLE])
+        return None
+    except Exception as exc:
+        return str(exc)
 
 
 def _k8s_name(mode: str) -> str:
@@ -576,8 +583,6 @@ def _scenario_panel(
                 fast_rps,
                 slow_rps,
             )
-            with st.expander("Generated k6 script"):
-                st.code(script, language="javascript")
             _log_recreate(
                 "start",
                 RUNTIME_K8S,
@@ -643,6 +648,59 @@ def _scenario_panel(
                 st.json(recreate_logs[-1])
 
 
+def _scenario_settings(mode: str) -> tuple[int, str, int, int | None]:
+    """Render mode-specific settings widgets; return (fast_rps, timeout, max_vus, slow_rps)."""
+    if mode == "insert":
+        rps = st.slider(
+            "Insert RPS",
+            1,
+            INSERT_RPS_SLIDER_MAX,
+            INSERT_RPS_DEFAULT,
+            key="insert_rps",
+        )
+        timeout = st.text_input(
+            "Insert timeout (e.g. 30s, 1m)",
+            INSERT_TIMEOUT_DEFAULT,
+            key="insert_timeout",
+        )
+        max_vus = st.slider(
+            "Insert max VUs",
+            1,
+            INSERT_MAX_VUS_SLIDER_MAX,
+            INSERT_MAX_VUS_DEFAULT,
+            key="insert_max_vus",
+        )
+        return rps, timeout, max_vus, None
+    else:
+        fast_rps = st.slider(
+            "Fast queries RPS",
+            0,
+            SELECT_FAST_RPS_SLIDER_MAX,
+            SELECT_FAST_RPS_DEFAULT,
+            key="select_fast_rps",
+        )
+        slow_rps = st.slider(
+            "Slow queries RPS",
+            0,
+            SELECT_SLOW_RPS_SLIDER_MAX,
+            SELECT_SLOW_RPS_DEFAULT,
+            key="select_slow_rps",
+        )
+        timeout = st.text_input(
+            "Select timeout (e.g. 30s, 1m)",
+            SELECT_TIMEOUT_DEFAULT,
+            key="select_timeout",
+        )
+        max_vus = st.slider(
+            "Select max VUs",
+            1,
+            SELECT_MAX_VUS_SLIDER_MAX,
+            SELECT_MAX_VUS_DEFAULT,
+            key="select_max_vus",
+        )
+        return fast_rps, timeout, max_vus, slow_rps
+
+
 # ---------------------------------------------------------------------------
 # Main app
 # ---------------------------------------------------------------------------
@@ -657,12 +715,13 @@ def main() -> None:
     st.title("Breaking Bench")
 
     _init_state()
-    _ensure_k6_operator()
+    if err := _ensure_k6_operator():
+        st.warning(f"k6 operator check failed: {err}")
 
-    with st.sidebar:
-        st.header("Configuration")
-        st.caption(f"Runner: {RUNTIME}")
-        st.caption(f"Kubernetes namespace: {K8S_NAMESPACE}")
+    # --- Main area: settings ---
+    st.subheader("Shared settings")
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
         write_url = st.text_input(
             "Write URL (PRW endpoint)",
             WRITE_URL_DEFAULT,
@@ -678,39 +737,17 @@ def main() -> None:
             METRICS_URL_DEFAULT,
             key="metrics_url",
         )
+    with sc2:
         metric_name = st.text_input("Metric name prefix", "test", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
+    with sc3:
         cardinality = st.slider(
             "Cardinality (distinct label values)",
             1,
             CARDINALITY_SLIDER_MAX,
             CARDINALITY_DEFAULT,
             key="cardinality",
-        )
-        insert_timeout = st.text_input(
-            "Insert timeout (e.g. 30s, 1m)",
-            INSERT_TIMEOUT_DEFAULT,
-            key="insert_timeout",
-        )
-        insert_max_vus = st.slider(
-            "Insert max VUs",
-            1,
-            INSERT_MAX_VUS_SLIDER_MAX,
-            INSERT_MAX_VUS_DEFAULT,
-            key="insert_max_vus",
-        )
-        select_timeout = st.text_input(
-            "Select timeout (e.g. 30s, 1m)",
-            SELECT_TIMEOUT_DEFAULT,
-            key="select_timeout",
-        )
-        select_max_vus = st.slider(
-            "Select max VUs",
-            1,
-            SELECT_MAX_VUS_SLIDER_MAX,
-            SELECT_MAX_VUS_DEFAULT,
-            key="select_max_vus",
         )
         replicas = st.slider(
             "Replicas (k8s parallelism)",
@@ -719,31 +756,23 @@ def main() -> None:
             REPLICAS_DEFAULT,
             key="replicas",
         )
-        insert_rps = st.slider(
-            "Insert RPS",
-            1,
-            INSERT_RPS_SLIDER_MAX,
-            INSERT_RPS_DEFAULT,
-            key="insert_rps",
-        )
-        select_fast_rps = st.slider(
-            "Fast queries RPS",
-            0,
-            SELECT_FAST_RPS_SLIDER_MAX,
-            SELECT_FAST_RPS_DEFAULT,
-            key="select_fast_rps",
-        )
-        select_slow_rps = st.slider(
-            "Slow queries RPS",
-            0,
-            SELECT_SLOW_RPS_SLIDER_MAX,
-            SELECT_SLOW_RPS_DEFAULT,
-            key="select_slow_rps",
-        )
 
+    st.divider()
     col_insert, col_select = st.columns(2, gap="large")
 
     with col_insert:
+        st.subheader("Insert settings")
+        insert_rps, insert_timeout, insert_max_vus, _ = _scenario_settings("insert")
+
+    with col_select:
+        st.subheader("Select settings")
+        select_fast_rps, select_timeout, select_max_vus, select_slow_rps = _scenario_settings("select")
+
+    # --- Sidebar: buttons and status ---
+    with st.sidebar:
+        st.caption(f"Runner: {RUNTIME}")
+        st.caption(f"Namespace: {K8S_NAMESPACE}")
+        st.divider()
         st.subheader("Insert")
         _scenario_panel(
             "insert",
@@ -762,8 +791,7 @@ def main() -> None:
             replicas,
             insert_rps,
         )
-
-    with col_select:
+        st.divider()
         st.subheader("Select")
         _scenario_panel(
             "select",

@@ -1,1 +1,1 @@
-uv run streamlit run app.py -- --runtime k8s --k8s-namespace default
+uv run streamlit run app.py -- --k8s-namespace default
