@@ -49,6 +49,28 @@ export const options = {
   insecureSkipTLSVerify: true,
 };
 
+export function setup() {
+  const configClient = new remote.Client({ url: WRITE_URL });
+  configClient.store([
+    remote.Timeseries(
+      {
+        __name__: 'breaking_bench_config',
+        mode: '{{ mode }}',
+        metric_name: '{{ metric_name }}',
+        write_url: WRITE_URL,
+        select_url: SELECT_URL,
+        fast_rps: '{{ fast_rps }}',
+{% if mode == 'select' %}
+        slow_rps: '{{ slow_rps }}',
+{% endif %}
+        num_metrics: '{{ num_metrics }}',
+        num_labels: '{{ num_labels }}',
+      },
+      [remote.Sample(1, Date.now())],
+    ),
+  ]);
+}
+
 {% if mode == 'insert' %}
 const client = new remote.Client({ url: WRITE_URL });
 
