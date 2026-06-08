@@ -34,11 +34,8 @@ METRICS_URL_DEFAULT = (
 )
 INSERT_RPS_DEFAULT = 1
 INSERT_TIMEOUT_DEFAULT = "30s"
-INSERT_MAX_VUS_DEFAULT = 50
-INSERT_MAX_VUS_SLIDER_MAX = 2000
 SELECT_TIMEOUT_DEFAULT = "30s"
-SELECT_MAX_VUS_DEFAULT = 50
-SELECT_MAX_VUS_SLIDER_MAX = 500
+MAX_VUS = 100
 SELECT_FAST_RPS_DEFAULT = 1
 SELECT_SLOW_RPS_DEFAULT = 1
 INSERT_RPS_SLIDER_MAX = 3000
@@ -49,6 +46,10 @@ CARDINALITY_SLIDER_MAX = 100
 INSERT_REPLICAS_DEFAULT = 1
 SELECT_REPLICAS_DEFAULT = 1
 REPLICAS_SLIDER_MAX = 20
+INSERT_CPU_REQUEST_DEFAULT = "50m"
+INSERT_MEMORY_REQUEST_DEFAULT = "128Mi"
+SELECT_CPU_REQUEST_DEFAULT = "50m"
+SELECT_MEMORY_REQUEST_DEFAULT = "128Mi"
 RUNTIME_K8S = "Kubernetes pod"
 
 
@@ -113,8 +114,6 @@ def build_k6_script(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
-    insert_max_vus: int,
-    select_max_vus: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> str:
@@ -134,9 +133,9 @@ def build_k6_script(
         select_timeout=select_timeout,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
-        maxVUs=max(1, insert_max_vus),
-        fastMaxVUs=max(1, select_max_vus),
-        slowMaxVUs=max(1, select_max_vus),
+        maxVUs=MAX_VUS,
+        fastMaxVUs=MAX_VUS,
+        slowMaxVUs=MAX_VUS,
     )
 
 
@@ -147,6 +146,8 @@ def build_k6_testrun_manifest(
     select_url: str,
     metrics_url: str,
     parallelism: int,
+    cpu_request: str,
+    memory_request: str,
 ) -> str:
     tmpl = _JINJA_ENV.get_template(_TESTRUN_TEMPLATE_PATH.name)
     return tmpl.render(
@@ -157,7 +158,15 @@ def build_k6_testrun_manifest(
         select_url=select_url,
         metrics_url=metrics_url,
         parallelism=parallelism,
+        cpu_request=cpu_request,
+        memory_request=memory_request,
     )
+
+
+def _resource_requests(mode: str) -> tuple[str, str]:
+    if mode == "insert":
+        return INSERT_CPU_REQUEST_DEFAULT, INSERT_MEMORY_REQUEST_DEFAULT
+    return SELECT_CPU_REQUEST_DEFAULT, SELECT_MEMORY_REQUEST_DEFAULT
 
 
 def _script_config(
@@ -178,8 +187,6 @@ def _workload_config(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
-    insert_max_vus: int,
-    select_max_vus: int,
     replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
@@ -196,8 +203,6 @@ def _workload_config(
         cardinality,
         insert_timeout,
         select_timeout,
-        insert_max_vus,
-        select_max_vus,
         replicas,
         fast_rps,
         slow_rps,
@@ -218,12 +223,11 @@ def _log_recreate(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
-    insert_max_vus: int,
-    select_max_vus: int,
     replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
+    cpu_request, memory_request = _resource_requests(mode)
     entry: dict[str, Any] = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "action": action,
@@ -239,9 +243,10 @@ def _log_recreate(
         "cardinality": cardinality,
         "insert_timeout": insert_timeout,
         "select_timeout": select_timeout,
-        "insert_max_vus": insert_max_vus,
-        "select_max_vus": select_max_vus,
+        "max_vus": MAX_VUS,
         "replicas": replicas,
+        "cpu_request": cpu_request,
+        "memory_request": memory_request,
         "fast_rps": fast_rps,
     }
     if mode == "select":
@@ -357,12 +362,20 @@ def start_k6_testrun(
 ) -> None:
     name = _k8s_name(mode)
     ns_args = _kubectl_namespace_args(namespace)
+    cpu_request, memory_request = _resource_requests(mode)
 
     _kubectl_delete(namespace, name, include_configmap=False)
     _kubectl_wait_deleted(namespace, "testrun", name, timeout_s=60)
     _apply_script_configmap(namespace, name, script)
     manifest = build_k6_testrun_manifest(
-        mode, name, write_url, select_url, metrics_url, replicas
+        mode,
+        name,
+        write_url,
+        select_url,
+        metrics_url,
+        replicas,
+        cpu_request,
+        memory_request,
     )
     _kubectl_run(
         ["kubectl", *ns_args, "apply", "-f", "-"],
@@ -409,7 +422,13 @@ def start_k6_workload(
     replicas: int = 1,
 ) -> None:
     start_k6_testrun(
-        mode, script, write_url, select_url, metrics_url, namespace, replicas
+        mode,
+        script,
+        write_url,
+        select_url,
+        metrics_url,
+        namespace,
+        replicas,
     )
     st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
     st.session_state[f"{mode}_namespace"] = namespace
@@ -427,8 +446,6 @@ def restart_k6(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
-    insert_max_vus: int,
-    select_max_vus: int,
     replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
@@ -444,8 +461,6 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
-        insert_max_vus,
-        select_max_vus,
         fast_rps,
         slow_rps,
     )
@@ -463,8 +478,6 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
-        insert_max_vus,
-        select_max_vus,
         replicas,
         fast_rps,
         slow_rps,
@@ -484,8 +497,6 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
-        insert_max_vus,
-        select_max_vus,
         replicas,
         fast_rps,
         slow_rps,
@@ -511,8 +522,6 @@ def _scenario_panel(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
-    insert_max_vus: int,
-    select_max_vus: int,
     replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
@@ -539,8 +548,6 @@ def _scenario_panel(
         cardinality,
         insert_timeout,
         select_timeout,
-        insert_max_vus,
-        select_max_vus,
         replicas,
         fast_rps,
         slow_rps,
@@ -562,8 +569,6 @@ def _scenario_panel(
             cardinality,
             insert_timeout,
             select_timeout,
-            insert_max_vus,
-            select_max_vus,
             replicas,
             fast_rps,
             slow_rps,
@@ -585,8 +590,6 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
-                insert_max_vus,
-                select_max_vus,
                 fast_rps,
                 slow_rps,
             )
@@ -604,8 +607,6 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
-                insert_max_vus,
-                select_max_vus,
                 replicas,
                 fast_rps,
                 slow_rps,
@@ -629,8 +630,6 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
-                insert_max_vus,
-                select_max_vus,
                 replicas,
                 fast_rps,
                 slow_rps,
@@ -657,8 +656,10 @@ def _scenario_panel(
                 st.json(recreate_logs[-1])
 
 
-def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
-    """Render mode settings; return (fast_rps, timeout, max_vus, replicas, slow_rps)."""
+def _scenario_settings(
+    mode: str,
+) -> tuple[int, str, int, int | None]:
+    """Render mode settings and resources."""
     if mode == "insert":
         rps = st.slider(
             "Insert RPS",
@@ -672,13 +673,6 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
             INSERT_TIMEOUT_DEFAULT,
             key="insert_timeout",
         )
-        max_vus = st.slider(
-            "Insert max VUs",
-            1,
-            INSERT_MAX_VUS_SLIDER_MAX,
-            INSERT_MAX_VUS_DEFAULT,
-            key="insert_max_vus",
-        )
         replicas = st.slider(
             "Insert replicas (k8s parallelism)",
             1,
@@ -686,7 +680,7 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
             INSERT_REPLICAS_DEFAULT,
             key="insert_replicas",
         )
-        return rps, timeout, max_vus, replicas, None
+        return rps, timeout, replicas, None
     else:
         fast_col, slow_col = st.columns(2)
         with fast_col:
@@ -710,13 +704,6 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
             SELECT_TIMEOUT_DEFAULT,
             key="select_timeout",
         )
-        max_vus = st.slider(
-            "Select max VUs",
-            1,
-            SELECT_MAX_VUS_SLIDER_MAX,
-            SELECT_MAX_VUS_DEFAULT,
-            key="select_max_vus",
-        )
         replicas = st.slider(
             "Select replicas (k8s parallelism)",
             1,
@@ -724,7 +711,7 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
             SELECT_REPLICAS_DEFAULT,
             key="select_replicas",
         )
-        return fast_rps, timeout, max_vus, replicas, slow_rps
+        return fast_rps, timeout, replicas, slow_rps
 
 
 # ---------------------------------------------------------------------------
@@ -781,16 +768,18 @@ def main() -> None:
 
     with col_insert:
         st.subheader("Insert settings")
-        insert_rps, insert_timeout, insert_max_vus, insert_replicas, _ = (
-            _scenario_settings("insert")
-        )
+        (
+            insert_rps,
+            insert_timeout,
+            insert_replicas,
+            _,
+        ) = _scenario_settings("insert")
 
     with col_select:
         st.subheader("Select settings")
         (
             select_fast_rps,
             select_timeout,
-            select_max_vus,
             select_replicas,
             select_slow_rps,
         ) = _scenario_settings("select")
@@ -813,8 +802,6 @@ def main() -> None:
             cardinality,
             insert_timeout,
             select_timeout,
-            insert_max_vus,
-            select_max_vus,
             insert_replicas,
             insert_rps,
         )
@@ -832,8 +819,6 @@ def main() -> None:
             cardinality,
             insert_timeout,
             select_timeout,
-            insert_max_vus,
-            select_max_vus,
             select_replicas,
             select_fast_rps,
             select_slow_rps,

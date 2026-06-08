@@ -26,4 +26,8 @@ spec:
       value: "p(99),p(95),avg,sum"
     - name: K6_OUT
       value: "experimental-prometheus-rw"
+    resources:
+      requests:
+        cpu: {{ cpu_request | tojson }}
+        memory: {{ memory_request | tojson }}
   arguments: --tag testid={{ mode }}
