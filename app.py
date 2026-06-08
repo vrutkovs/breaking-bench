@@ -670,14 +670,14 @@ def main() -> None:
         )
         select_fast_rps = st.slider(
             "Fast queries RPS",
-            1,
+            0,
             SELECT_FAST_RPS_SLIDER_MAX,
             SELECT_FAST_RPS_DEFAULT,
             key="select_fast_rps",
         )
         select_slow_rps = st.slider(
             "Slow queries RPS",
-            1,
+            0,
             SELECT_SLOW_RPS_SLIDER_MAX,
             SELECT_SLOW_RPS_DEFAULT,
             key="select_slow_rps",
