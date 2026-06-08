@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import tempfile
 import time
@@ -17,12 +16,10 @@ import streamlit as st
 # Constants
 # ---------------------------------------------------------------------------
 
-# K6_IMAGE = "quay.io/vrutkovs/k6-with-prw-extension:v2.0.0"
 K6_IMAGE = "docker.io/grafana/k6:1.7.1"
-K6_INSERT_CONTAINER = "breaking-bench-k6-insert"
-K6_SELECT_CONTAINER = "breaking-bench-k6-select"
 K6_INSERT_POD = "breaking-bench-k6-insert"
 K6_SELECT_POD = "breaking-bench-k6-select"
+K6_OPERATOR_BUNDLE = "https://github.com/grafana/k6-operator/releases/latest/download/bundle.yaml"
 
 WRITE_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
@@ -47,18 +44,13 @@ SELECT_FAST_RPS_SLIDER_MAX = 50
 SELECT_SLOW_RPS_SLIDER_MAX = 5
 CARDINALITY_DEFAULT = 1
 CARDINALITY_SLIDER_MAX = 10000
-RUNTIME_PODMAN = "Podman"
+REPLICAS_DEFAULT = 1
+REPLICAS_SLIDER_MAX = 20
 RUNTIME_K8S = "Kubernetes pod"
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--runtime",
-        choices=("k8s", "podman"),
-        default="k8s",
-        help="k6 runner backend",
-    )
     parser.add_argument(
         "--k8s-namespace",
         default="default",
@@ -68,7 +60,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 ARGS = _parse_args()
-RUNTIME = RUNTIME_K8S if ARGS.runtime == "k8s" else RUNTIME_PODMAN
+RUNTIME = RUNTIME_K8S
 K8S_NAMESPACE = ARGS.k8s_namespace
 
 # ---------------------------------------------------------------------------
@@ -80,8 +72,6 @@ def _init_state() -> None:
     defaults: dict[str, Any] = {
         "insert_running": False,
         "select_running": False,
-        "insert_runtime": RUNTIME,
-        "select_runtime": RUNTIME,
         "insert_namespace": K8S_NAMESPACE,
         "select_namespace": K8S_NAMESPACE,
         "insert_recreate_logs": [],
@@ -100,7 +90,7 @@ def _init_state() -> None:
 
 
 _TEMPLATE_PATH = Path(__file__).parent / "k6_script.js.j2"
-_POD_TEMPLATE_PATH = Path(__file__).parent / "k6_pod.yaml.j2"
+_TESTRUN_TEMPLATE_PATH = Path(__file__).parent / "k6_testrun.yaml.j2"
 _JINJA_ENV = jinja2.Environment(
     loader=jinja2.FileSystemLoader(str(_TEMPLATE_PATH.parent)),
     keep_trailing_newline=True,
@@ -147,14 +137,15 @@ def build_k6_script(
     )
 
 
-def build_k6_pod_manifest(
+def build_k6_testrun_manifest(
     mode: str,
     name: str,
     write_url: str,
     select_url: str,
     metrics_url: str,
+    parallelism: int,
 ) -> str:
-    tmpl = _JINJA_ENV.get_template(_POD_TEMPLATE_PATH.name)
+    tmpl = _JINJA_ENV.get_template(_TESTRUN_TEMPLATE_PATH.name)
     return tmpl.render(
         mode=mode,
         name=name,
@@ -162,6 +153,7 @@ def build_k6_pod_manifest(
         write_url=write_url,
         select_url=select_url,
         metrics_url=metrics_url,
+        parallelism=parallelism,
     )
 
 
@@ -185,6 +177,7 @@ def _workload_config(
     select_timeout: str,
     insert_max_vus: int,
     select_max_vus: int,
+    replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> tuple[Any, ...]:
@@ -202,6 +195,7 @@ def _workload_config(
         select_timeout,
         insert_max_vus,
         select_max_vus,
+        replicas,
         fast_rps,
         slow_rps,
     )
@@ -223,6 +217,7 @@ def _log_recreate(
     select_timeout: str,
     insert_max_vus: int,
     select_max_vus: int,
+    replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -231,7 +226,7 @@ def _log_recreate(
         "action": action,
         "runtime": runtime,
         "mode": mode,
-        "namespace": namespace if runtime == RUNTIME_K8S else "",
+        "namespace": namespace,
         "write_url": write_url,
         "select_url": select_url,
         "metrics_url": metrics_url,
@@ -243,6 +238,7 @@ def _log_recreate(
         "select_timeout": select_timeout,
         "insert_max_vus": insert_max_vus,
         "select_max_vus": select_max_vus,
+        "replicas": replicas,
         "fast_rps": fast_rps,
     }
     if mode == "select":
@@ -254,57 +250,15 @@ def _log_recreate(
     print(f"breaking-bench recreate params: {entry}", flush=True)
 
 
-# ---------------------------------------------------------------------------
-# Podman runner
-# ---------------------------------------------------------------------------
-
-
-def start_k6(
-    mode: str, script: str, write_url: str, select_url: str, metrics_url: str
-) -> None:
-    container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
-    running_key = f"{mode}_running"
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".js", delete=False)
-    tmp.write(script.encode())
-    tmp.flush()
-    tmp.close()
-    os.chmod(tmp.name, 0o644)
-
-    subprocess.run(["podman", "rm", "-f", container], capture_output=True)
-    subprocess.run(
-        [
-            "podman",
-            "run",
-            "-d",
-            "--replace",
-            "--name",
-            container,
-            "--network",
-            "host",
-            "-e",
-            f"WRITE_URL={write_url}",
-            "-e",
-            f"SELECT_URL={select_url}",
-            "-e",
-            f"METRICS_URL={metrics_url}",
-            "-e",
-            f"K6_PROMETHEUS_RW_SERVER_URL={metrics_url}",
-            "-e",
-            "K6_PROMETHEUS_RW_TREND_STATS=p(99),p(95),avg,sum",
-            "-v",
-            f"{tmp.name}:/script.js:ro",
-            K6_IMAGE,
-            "run",
-            "--out=experimental-prometheus-rw",
-            "--tag",
-            f"testid={mode}",
-            "/script.js",
-        ],
-        check=True,
+def _ensure_k6_operator() -> None:
+    """Install k6 operator via bundle.yaml if TestRun CRD is absent."""
+    proc = subprocess.run(
+        ["kubectl", "get", "crd", "testruns.k6.io"],
+        capture_output=True,
     )
-
-    st.session_state[running_key] = True
+    if proc.returncode == 0:
+        return
+    _kubectl_run(["kubectl", "apply", "-f", K6_OPERATOR_BUNDLE])
 
 
 def _k8s_name(mode: str) -> str:
@@ -326,7 +280,7 @@ def _kubectl_run(args: list[str], input_data: bytes | None = None) -> bytes:
 def _kubectl_delete(namespace: str, name: str, include_configmap: bool = True) -> None:
     ns_args = _kubectl_namespace_args(namespace)
     subprocess.run(
-        ["kubectl", *ns_args, "delete", "pod", name, "--ignore-not-found"],
+        ["kubectl", *ns_args, "delete", "testrun", name, "--ignore-not-found"],
         capture_output=True,
     )
     if not include_configmap:
@@ -382,21 +336,24 @@ def _apply_script_configmap(namespace: str, name: str, script: str) -> None:
         Path(tmp.name).unlink(missing_ok=True)
 
 
-def start_k6_pod(
+def start_k6_testrun(
     mode: str,
     script: str,
     write_url: str,
     select_url: str,
     metrics_url: str,
     namespace: str,
+    replicas: int,
 ) -> None:
     name = _k8s_name(mode)
     ns_args = _kubectl_namespace_args(namespace)
 
     _kubectl_delete(namespace, name, include_configmap=False)
-    _kubectl_wait_deleted(namespace, "pod", name)
+    _kubectl_wait_deleted(namespace, "testrun", name, timeout_s=60)
     _apply_script_configmap(namespace, name, script)
-    manifest = build_k6_pod_manifest(mode, name, write_url, select_url, metrics_url)
+    manifest = build_k6_testrun_manifest(
+        mode, name, write_url, select_url, metrics_url, replicas
+    )
     _kubectl_run(
         ["kubectl", *ns_args, "apply", "-f", "-"],
         input_data=manifest.encode(),
@@ -406,23 +363,23 @@ def start_k6_pod(
     st.session_state[f"{mode}_namespace"] = namespace
 
 
-def stop_k6_pod(mode: str, namespace: str) -> None:
+def stop_k6_testrun(mode: str, namespace: str) -> None:
     _kubectl_delete(namespace, _k8s_name(mode))
     st.session_state[f"{mode}_running"] = False
     st.session_state[f"{mode}_script_config"] = None
 
 
-def get_k6_pod_phase(mode: str, namespace: str) -> str | None:
+def get_k6_testrun_stage(mode: str, namespace: str) -> str | None:
     ns_args = _kubectl_namespace_args(namespace)
     proc = subprocess.run(
         [
             "kubectl",
             *ns_args,
             "get",
-            "pod",
+            "testrun",
             _k8s_name(mode),
             "-o",
-            "jsonpath={.status.phase}",
+            "jsonpath={.status.stage}",
         ],
         capture_output=True,
         text=True,
@@ -433,24 +390,20 @@ def get_k6_pod_phase(mode: str, namespace: str) -> str | None:
 
 
 def start_k6_workload(
-    runtime: str,
     mode: str,
     script: str,
     write_url: str,
     select_url: str,
     metrics_url: str,
     namespace: str,
+    replicas: int = 1,
 ) -> None:
-    if runtime == RUNTIME_K8S:
-        start_k6_pod(mode, script, write_url, select_url, metrics_url, namespace)
-    else:
-        start_k6(mode, script, write_url, select_url, metrics_url)
-    st.session_state[f"{mode}_runtime"] = runtime
+    start_k6_testrun(mode, script, write_url, select_url, metrics_url, namespace, replicas)
+    st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
     st.session_state[f"{mode}_namespace"] = namespace
 
 
 def restart_k6(
-    runtime: str,
     mode: str,
     write_url: str,
     select_url: str,
@@ -464,6 +417,7 @@ def restart_k6(
     select_timeout: str,
     insert_max_vus: int,
     select_max_vus: int,
+    replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -485,7 +439,7 @@ def restart_k6(
     )
     _log_recreate(
         "recreate",
-        runtime,
+        RUNTIME_K8S,
         mode,
         write_url,
         select_url,
@@ -499,14 +453,13 @@ def restart_k6(
         select_timeout,
         insert_max_vus,
         select_max_vus,
+        replicas,
         fast_rps,
         slow_rps,
     )
-    start_k6_workload(
-        runtime, mode, script, write_url, select_url, metrics_url, namespace
-    )
+    start_k6_workload(mode, script, write_url, select_url, metrics_url, namespace, replicas)
     st.session_state[f"{mode}_script_config"] = _workload_config(
-        runtime,
+        RUNTIME_K8S,
         write_url,
         select_url,
         metrics_url,
@@ -519,30 +472,20 @@ def restart_k6(
         select_timeout,
         insert_max_vus,
         select_max_vus,
+        replicas,
         fast_rps,
         slow_rps,
     )
 
 
-def stop_k6(mode: str) -> None:
-    container = K6_INSERT_CONTAINER if mode == "insert" else K6_SELECT_CONTAINER
-    subprocess.run(["podman", "rm", "-f", container], capture_output=True)
-    st.session_state[f"{mode}_running"] = False
-    st.session_state[f"{mode}_script_config"] = None
-
-
-def stop_k6_workload(runtime: str, mode: str, namespace: str) -> None:
-    if runtime == RUNTIME_K8S:
-        stop_k6_pod(mode, namespace)
-    else:
-        stop_k6(mode)
+def stop_k6_workload(mode: str, namespace: str) -> None:
+    stop_k6_testrun(mode, namespace)
 
 
 # ---------------------------------------------------------------------------
 # UI helpers
 # ---------------------------------------------------------------------------
 def _scenario_panel(
-    runtime: str,
     mode: str,
     write_url: str,
     select_url: str,
@@ -556,23 +499,22 @@ def _scenario_panel(
     select_timeout: str,
     insert_max_vus: int,
     select_max_vus: int,
+    replicas: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
     running: bool = st.session_state.get(f"{mode}_running", False)
 
-    if runtime == RUNTIME_K8S and not running:
-        phase = get_k6_pod_phase(mode, namespace)
-        if phase:
+    if not running:
+        stage = get_k6_testrun_stage(mode, namespace)
+        if stage and stage not in ("finished", "error"):
             running = True
             st.session_state[f"{mode}_running"] = True
-            st.session_state[f"{mode}_runtime"] = runtime
             st.session_state[f"{mode}_namespace"] = namespace
 
-    active_runtime: str = st.session_state.get(f"{mode}_runtime", runtime)
     active_namespace: str = st.session_state.get(f"{mode}_namespace", namespace)
     script_config = _workload_config(
-        active_runtime,
+        RUNTIME_K8S,
         write_url,
         select_url,
         metrics_url,
@@ -585,6 +527,7 @@ def _scenario_panel(
         select_timeout,
         insert_max_vus,
         select_max_vus,
+        replicas,
         fast_rps,
         slow_rps,
     )
@@ -592,10 +535,9 @@ def _scenario_panel(
         st.session_state[f"{mode}_script_config"] = script_config
 
     if not running:
-        active_runtime = runtime
         active_namespace = namespace
         script_config = _workload_config(
-            runtime,
+            RUNTIME_K8S,
             write_url,
             select_url,
             metrics_url,
@@ -608,6 +550,7 @@ def _scenario_panel(
             select_timeout,
             insert_max_vus,
             select_max_vus,
+            replicas,
             fast_rps,
             slow_rps,
         )
@@ -637,7 +580,7 @@ def _scenario_panel(
                 st.code(script, language="javascript")
             _log_recreate(
                 "start",
-                runtime,
+                RUNTIME_K8S,
                 mode,
                 write_url,
                 select_url,
@@ -651,18 +594,16 @@ def _scenario_panel(
                 select_timeout,
                 insert_max_vus,
                 select_max_vus,
+                replicas,
                 fast_rps,
                 slow_rps,
             )
-            start_k6_workload(
-                runtime, mode, script, write_url, select_url, metrics_url, namespace
-            )
+            start_k6_workload(mode, script, write_url, select_url, metrics_url, namespace, replicas)
             st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
     else:
         if st.session_state.get(f"{mode}_script_config") != script_config:
             restart_k6(
-                active_runtime,
                 mode,
                 write_url,
                 select_url,
@@ -676,27 +617,25 @@ def _scenario_panel(
                 select_timeout,
                 insert_max_vus,
                 select_max_vus,
+                replicas,
                 fast_rps,
                 slow_rps,
             )
             st.info(f"{mode} restarted with updated parameters")
             st.rerun()
 
-        st.success(f"{mode} running via {active_runtime}")
-        if active_runtime != runtime:
-            st.info(f"Stop current {active_runtime} workload before switching runner")
+        st.success(f"{mode} running")
         if st.button(
             f"Stop {mode}",
             type="secondary",
             use_container_width=True,
             key=f"stop_{mode}",
         ):
-            stop_k6_workload(active_runtime, mode, active_namespace)
+            stop_k6_workload(mode, active_namespace)
             st.rerun()
 
-        if active_runtime == RUNTIME_K8S:
-            phase = get_k6_pod_phase(mode, active_namespace)
-            st.caption(f"Pod phase: {phase or 'not found'}")
+        stage = get_k6_testrun_stage(mode, active_namespace)
+        st.caption(f"TestRun stage: {stage or 'not found'}")
 
         recreate_logs = st.session_state.get(f"{mode}_recreate_logs", [])
         if recreate_logs:
@@ -718,21 +657,12 @@ def main() -> None:
     st.title("Breaking Bench")
 
     _init_state()
-
-    st.html("""
-    <style>
-    .stChatMessage {
-        padding-top: 0;
-        padding-bottom: 0;
-    }
-    </style>
-    """)
+    _ensure_k6_operator()
 
     with st.sidebar:
         st.header("Configuration")
         st.caption(f"Runner: {RUNTIME}")
-        if RUNTIME == RUNTIME_K8S:
-            st.caption(f"Kubernetes namespace: {K8S_NAMESPACE}")
+        st.caption(f"Kubernetes namespace: {K8S_NAMESPACE}")
         write_url = st.text_input(
             "Write URL (PRW endpoint)",
             WRITE_URL_DEFAULT,
@@ -782,6 +712,13 @@ def main() -> None:
             SELECT_MAX_VUS_DEFAULT,
             key="select_max_vus",
         )
+        replicas = st.slider(
+            "Replicas (k8s parallelism)",
+            1,
+            REPLICAS_SLIDER_MAX,
+            REPLICAS_DEFAULT,
+            key="replicas",
+        )
         insert_rps = st.slider(
             "Insert RPS",
             1,
@@ -809,7 +746,6 @@ def main() -> None:
     with col_insert:
         st.subheader("Insert")
         _scenario_panel(
-            RUNTIME,
             "insert",
             write_url,
             select_url,
@@ -823,13 +759,13 @@ def main() -> None:
             select_timeout,
             insert_max_vus,
             select_max_vus,
+            replicas,
             insert_rps,
         )
 
     with col_select:
         st.subheader("Select")
         _scenario_panel(
-            RUNTIME,
             "select",
             write_url,
             select_url,
@@ -843,6 +779,7 @@ def main() -> None:
             select_timeout,
             insert_max_vus,
             select_max_vus,
+            replicas,
             select_fast_rps,
             select_slow_rps,
         )

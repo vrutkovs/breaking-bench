@@ -32,7 +32,7 @@ A `breaking_bench_config` metric is written to `Metrics URL` at startup with lab
 - Python 3.11+
 - uv
 - Podman for local container runner
-- kubectl for Kubernetes pod runner
+- kubectl + k6 operator for Kubernetes runner (`kubectl apply -f https://github.com/grafana/k6-operator/releases/latest/download/bundle.yaml`)
 - Network access to VictoriaMetrics `vminsert` and `vmselect`
 
 ## Run
@@ -43,7 +43,7 @@ uv run streamlit run app.py
 
 Open Streamlit URL shown by command output.
 
-Kubernetes pod runner is default. Pass app arguments after Streamlit `--`:
+Kubernetes runner is default (uses k6 operator `TestRun` CRD). Pass app arguments after Streamlit `--`:
 
 ```bash
 uv run streamlit run app.py -- --runtime k8s --k8s-namespace default
@@ -62,11 +62,16 @@ Sidebar fields:
 - `Metric name prefix`: prefix for generated metrics. Metric names become `<prefix>_<index>`.
 - `Metric variants`: number of metric names to generate.
 - `Extra labels`: number of additional labels named `label_0`, `label_1`, etc.
+- `Replicas`: k6 operator `parallelism` — number of k6 pods per workload. Each replica runs `RPS/N` and `maxVUs/N` so total throughput equals configured values. Ignored for Podman runner.
+- `Insert timeout`: HTTP timeout for remote write requests.
+- `Insert max VUs`: upper bound on concurrent VUs for insert workload. Set to `RPS × expected_latency_s` to avoid dropped iterations.
+- `Select timeout`: HTTP timeout for select queries.
+- `Select max VUs`: upper bound on concurrent VUs shared across fast and slow query scenarios.
 - `Insert RPS`: insert workload request rate.
 - `Fast queries RPS`: request rate for cache-friendly metric select queries (`fast_query`).
 - `Slow queries RPS`: request rate for range select queries (`slow_query`).
 
-Changing any URL, metric prefix, variants, labels, or RPS while a scenario is running regenerates k6 script and restarts affected workload.
+Changing any parameter while a scenario is running regenerates the k6 script and restarts the affected workload.
 
 Generated k6 scripts use `constant-arrival-rate` scenarios:
 
@@ -74,7 +79,7 @@ Generated k6 scripts use `constant-arrival-rate` scenarios:
 - select: `fast_queries` runs `fast_query` at `Fast queries RPS`.
 - select: `slow_queries` runs `slow_query` at `Slow queries RPS`.
 
-Each start or automatic restart logs workload parameters to Streamlit output and shows latest values in `Last job parameters`. Logged rate fields are `fast_rps` and, for select, `slow_rps`. Running workloads refresh the page every 2 seconds so Kubernetes Pod phase stays current.
+Each start or automatic restart logs workload parameters to Streamlit output and shows latest values in `Last job parameters`. Running workloads refresh the page every 2 seconds so Kubernetes TestRun stage stays current.
 
 ## Controls
 
