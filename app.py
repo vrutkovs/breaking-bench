@@ -688,20 +688,23 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
         )
         return rps, timeout, max_vus, replicas, None
     else:
-        fast_rps = st.slider(
-            "Fast queries RPS",
-            0,
-            SELECT_FAST_RPS_SLIDER_MAX,
-            SELECT_FAST_RPS_DEFAULT,
-            key="select_fast_rps",
-        )
-        slow_rps = st.slider(
-            "Slow queries RPS",
-            0,
-            SELECT_SLOW_RPS_SLIDER_MAX,
-            SELECT_SLOW_RPS_DEFAULT,
-            key="select_slow_rps",
-        )
+        fast_col, slow_col = st.columns(2)
+        with fast_col:
+            fast_rps = st.slider(
+                "Fast queries RPS",
+                0,
+                SELECT_FAST_RPS_SLIDER_MAX,
+                SELECT_FAST_RPS_DEFAULT,
+                key="select_fast_rps",
+            )
+        with slow_col:
+            slow_rps = st.slider(
+                "Slow queries RPS",
+                0,
+                SELECT_SLOW_RPS_SLIDER_MAX,
+                SELECT_SLOW_RPS_DEFAULT,
+                key="select_slow_rps",
+            )
         timeout = st.text_input(
             "Select timeout (e.g. 30s, 1m)",
             SELECT_TIMEOUT_DEFAULT,
