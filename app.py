@@ -19,7 +19,9 @@ import streamlit as st
 K6_IMAGE = "docker.io/grafana/k6:1.7.1"
 K6_INSERT_POD = "breaking-bench-k6-insert"
 K6_SELECT_POD = "breaking-bench-k6-select"
-K6_OPERATOR_BUNDLE = "https://github.com/grafana/k6-operator/releases/latest/download/bundle.yaml"
+K6_OPERATOR_BUNDLE = (
+    "https://github.com/grafana/k6-operator/releases/latest/download/bundle.yaml"
+)
 
 WRITE_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
@@ -43,8 +45,9 @@ INSERT_RPS_SLIDER_MAX = 3000
 SELECT_FAST_RPS_SLIDER_MAX = 50
 SELECT_SLOW_RPS_SLIDER_MAX = 5
 CARDINALITY_DEFAULT = 1
-CARDINALITY_SLIDER_MAX = 10000
-REPLICAS_DEFAULT = 1
+CARDINALITY_SLIDER_MAX = 100
+INSERT_REPLICAS_DEFAULT = 1
+SELECT_REPLICAS_DEFAULT = 1
 REPLICAS_SLIDER_MAX = 20
 RUNTIME_K8S = "Kubernetes pod"
 
@@ -405,7 +408,9 @@ def start_k6_workload(
     namespace: str,
     replicas: int = 1,
 ) -> None:
-    start_k6_testrun(mode, script, write_url, select_url, metrics_url, namespace, replicas)
+    start_k6_testrun(
+        mode, script, write_url, select_url, metrics_url, namespace, replicas
+    )
     st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
     st.session_state[f"{mode}_namespace"] = namespace
 
@@ -464,7 +469,9 @@ def restart_k6(
         fast_rps,
         slow_rps,
     )
-    start_k6_workload(mode, script, write_url, select_url, metrics_url, namespace, replicas)
+    start_k6_workload(
+        mode, script, write_url, select_url, metrics_url, namespace, replicas
+    )
     st.session_state[f"{mode}_script_config"] = _workload_config(
         RUNTIME_K8S,
         write_url,
@@ -603,7 +610,9 @@ def _scenario_panel(
                 fast_rps,
                 slow_rps,
             )
-            start_k6_workload(mode, script, write_url, select_url, metrics_url, namespace, replicas)
+            start_k6_workload(
+                mode, script, write_url, select_url, metrics_url, namespace, replicas
+            )
             st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
     else:
@@ -648,8 +657,8 @@ def _scenario_panel(
                 st.json(recreate_logs[-1])
 
 
-def _scenario_settings(mode: str) -> tuple[int, str, int, int | None]:
-    """Render mode-specific settings widgets; return (fast_rps, timeout, max_vus, slow_rps)."""
+def _scenario_settings(mode: str) -> tuple[int, str, int, int, int | None]:
+    """Render mode settings; return (fast_rps, timeout, max_vus, replicas, slow_rps)."""
     if mode == "insert":
         rps = st.slider(
             "Insert RPS",
@@ -670,7 +679,14 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int | None]:
             INSERT_MAX_VUS_DEFAULT,
             key="insert_max_vus",
         )
-        return rps, timeout, max_vus, None
+        replicas = st.slider(
+            "Insert replicas (k8s parallelism)",
+            1,
+            REPLICAS_SLIDER_MAX,
+            INSERT_REPLICAS_DEFAULT,
+            key="insert_replicas",
+        )
+        return rps, timeout, max_vus, replicas, None
     else:
         fast_rps = st.slider(
             "Fast queries RPS",
@@ -698,7 +714,14 @@ def _scenario_settings(mode: str) -> tuple[int, str, int, int | None]:
             SELECT_MAX_VUS_DEFAULT,
             key="select_max_vus",
         )
-        return fast_rps, timeout, max_vus, slow_rps
+        replicas = st.slider(
+            "Select replicas (k8s parallelism)",
+            1,
+            REPLICAS_SLIDER_MAX,
+            SELECT_REPLICAS_DEFAULT,
+            key="select_replicas",
+        )
+        return fast_rps, timeout, max_vus, replicas, slow_rps
 
 
 # ---------------------------------------------------------------------------
@@ -749,24 +772,25 @@ def main() -> None:
             CARDINALITY_DEFAULT,
             key="cardinality",
         )
-        replicas = st.slider(
-            "Replicas (k8s parallelism)",
-            1,
-            REPLICAS_SLIDER_MAX,
-            REPLICAS_DEFAULT,
-            key="replicas",
-        )
 
     st.divider()
     col_insert, col_select = st.columns(2, gap="large")
 
     with col_insert:
         st.subheader("Insert settings")
-        insert_rps, insert_timeout, insert_max_vus, _ = _scenario_settings("insert")
+        insert_rps, insert_timeout, insert_max_vus, insert_replicas, _ = (
+            _scenario_settings("insert")
+        )
 
     with col_select:
         st.subheader("Select settings")
-        select_fast_rps, select_timeout, select_max_vus, select_slow_rps = _scenario_settings("select")
+        (
+            select_fast_rps,
+            select_timeout,
+            select_max_vus,
+            select_replicas,
+            select_slow_rps,
+        ) = _scenario_settings("select")
 
     # --- Sidebar: buttons and status ---
     with st.sidebar:
@@ -788,7 +812,7 @@ def main() -> None:
             select_timeout,
             insert_max_vus,
             select_max_vus,
-            replicas,
+            insert_replicas,
             insert_rps,
         )
         st.divider()
@@ -807,7 +831,7 @@ def main() -> None:
             select_timeout,
             insert_max_vus,
             select_max_vus,
-            replicas,
+            select_replicas,
             select_fast_rps,
             select_slow_rps,
         )
