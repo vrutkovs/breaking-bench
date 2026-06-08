@@ -28,6 +28,8 @@ spec:
     - run
     - --out=experimental-prometheus-rw
     - --http-debug
+    - --discard-response-bodies=true
+    - --no-vu-connection-reuse=true
     - --tag
     - testid={{ mode }}
     - /script.js
