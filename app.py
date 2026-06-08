@@ -628,9 +628,6 @@ def main() -> None:
         metric_name = st.text_input("Metric name prefix", "test", key="metric_name")
         num_metrics = st.slider("Metric variants", 1, 20, 1, key="num_metrics")
         num_labels = st.slider("Extra labels", 0, 10, 0, key="num_labels")
-
-        st.divider()
-        st.header("Insert")
         insert_rps = st.slider(
             "Insert RPS",
             1,
@@ -638,9 +635,6 @@ def main() -> None:
             INSERT_RPS_DEFAULT,
             key="insert_rps",
         )
-
-        st.divider()
-        st.header("Select")
         select_fast_rps = st.slider(
             "Fast queries RPS",
             1,
