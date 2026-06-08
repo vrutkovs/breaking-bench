@@ -35,7 +35,11 @@ METRICS_URL_DEFAULT = (
 )
 INSERT_RPS_DEFAULT = 1
 INSERT_TIMEOUT_DEFAULT = "30s"
+INSERT_MAX_VUS_DEFAULT = 50
+INSERT_MAX_VUS_SLIDER_MAX = 2000
 SELECT_TIMEOUT_DEFAULT = "30s"
+SELECT_MAX_VUS_DEFAULT = 50
+SELECT_MAX_VUS_SLIDER_MAX = 500
 SELECT_FAST_RPS_DEFAULT = 1
 SELECT_SLOW_RPS_DEFAULT = 1
 INSERT_RPS_SLIDER_MAX = 3000
@@ -105,15 +109,6 @@ _JINJA_ENV = jinja2.Environment(
 )
 
 
-def _parse_duration_s(d: str) -> int:
-    d = d.strip()
-    if d.endswith('m'):
-        return int(d[:-1]) * 60
-    if d.endswith('s'):
-        return int(d[:-1])
-    return int(d)
-
-
 def build_k6_script(
     mode: str,
     write_url: str,
@@ -125,6 +120,8 @@ def build_k6_script(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
+    insert_max_vus: int,
+    select_max_vus: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> str:
@@ -144,9 +141,9 @@ def build_k6_script(
         select_timeout=select_timeout,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
-        maxVUs=max(1, fast_rps * _parse_duration_s(insert_timeout)),
-        fastMaxVUs=max(1, fast_rps * _parse_duration_s(select_timeout)),
-        slowMaxVUs=max(1, slow_rps * _parse_duration_s(select_timeout)),
+        maxVUs=max(1, insert_max_vus),
+        fastMaxVUs=max(1, select_max_vus),
+        slowMaxVUs=max(1, select_max_vus),
     )
 
 
@@ -186,6 +183,8 @@ def _workload_config(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
+    insert_max_vus: int,
+    select_max_vus: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> tuple[Any, ...]:
@@ -201,6 +200,8 @@ def _workload_config(
         cardinality,
         insert_timeout,
         select_timeout,
+        insert_max_vus,
+        select_max_vus,
         fast_rps,
         slow_rps,
     )
@@ -220,6 +221,8 @@ def _log_recreate(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
+    insert_max_vus: int,
+    select_max_vus: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -238,6 +241,8 @@ def _log_recreate(
         "cardinality": cardinality,
         "insert_timeout": insert_timeout,
         "select_timeout": select_timeout,
+        "insert_max_vus": insert_max_vus,
+        "select_max_vus": select_max_vus,
         "fast_rps": fast_rps,
     }
     if mode == "select":
@@ -457,6 +462,8 @@ def restart_k6(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
+    insert_max_vus: int,
+    select_max_vus: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -471,6 +478,8 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
+        insert_max_vus,
+        select_max_vus,
         fast_rps,
         slow_rps,
     )
@@ -488,6 +497,8 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
+        insert_max_vus,
+        select_max_vus,
         fast_rps,
         slow_rps,
     )
@@ -506,6 +517,8 @@ def restart_k6(
         cardinality,
         insert_timeout,
         select_timeout,
+        insert_max_vus,
+        select_max_vus,
         fast_rps,
         slow_rps,
     )
@@ -541,6 +554,8 @@ def _scenario_panel(
     cardinality: int,
     insert_timeout: str,
     select_timeout: str,
+    insert_max_vus: int,
+    select_max_vus: int,
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
@@ -568,6 +583,8 @@ def _scenario_panel(
         cardinality,
         insert_timeout,
         select_timeout,
+        insert_max_vus,
+        select_max_vus,
         fast_rps,
         slow_rps,
     )
@@ -589,6 +606,8 @@ def _scenario_panel(
             cardinality,
             insert_timeout,
             select_timeout,
+            insert_max_vus,
+            select_max_vus,
             fast_rps,
             slow_rps,
         )
@@ -609,6 +628,8 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
+                insert_max_vus,
+                select_max_vus,
                 fast_rps,
                 slow_rps,
             )
@@ -628,6 +649,8 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
+                insert_max_vus,
+                select_max_vus,
                 fast_rps,
                 slow_rps,
             )
@@ -651,6 +674,8 @@ def _scenario_panel(
                 cardinality,
                 insert_timeout,
                 select_timeout,
+                insert_max_vus,
+                select_max_vus,
                 fast_rps,
                 slow_rps,
             )
@@ -738,10 +763,24 @@ def main() -> None:
             INSERT_TIMEOUT_DEFAULT,
             key="insert_timeout",
         )
+        insert_max_vus = st.slider(
+            "Insert max VUs",
+            1,
+            INSERT_MAX_VUS_SLIDER_MAX,
+            INSERT_MAX_VUS_DEFAULT,
+            key="insert_max_vus",
+        )
         select_timeout = st.text_input(
             "Select timeout (e.g. 30s, 1m)",
             SELECT_TIMEOUT_DEFAULT,
             key="select_timeout",
+        )
+        select_max_vus = st.slider(
+            "Select max VUs",
+            1,
+            SELECT_MAX_VUS_SLIDER_MAX,
+            SELECT_MAX_VUS_DEFAULT,
+            key="select_max_vus",
         )
         insert_rps = st.slider(
             "Insert RPS",
@@ -782,6 +821,8 @@ def main() -> None:
             cardinality,
             insert_timeout,
             select_timeout,
+            insert_max_vus,
+            select_max_vus,
             insert_rps,
         )
 
@@ -800,6 +841,8 @@ def main() -> None:
             cardinality,
             insert_timeout,
             select_timeout,
+            insert_max_vus,
+            select_max_vus,
             select_fast_rps,
             select_slow_rps,
         )
