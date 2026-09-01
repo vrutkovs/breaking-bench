@@ -76,21 +76,26 @@ export function setup() {
 {% if mode == 'insert' %}
 const client = new remote.Client({ url: WRITE_URL, timeout: '{{ insert_timeout }}' });
 
-export default function () {
-  const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
-  const res = client.store([
-    remote.Timeseries(
-      {
-        __name__: `{{ metric_name }}_${metricIdx}`,
-        foo: `bar`,
-        random: `${faker.numbers.intRange(0, {{ cardinality - 1 }})}`,
+// Series-id space swept each iteration: metric name changes every `cardinality`
+// series, remaining labels cycle at offset moduli so they diverge from one another.
+// storeFromTemplates generates + sends all series in Go, avoiding per-sample JS<->Go
+// calls that the old faker-driven remote.Timeseries()/Sample() loop required.
+const template = {
+  __name__: '{{ metric_name }}_${series_id/{{ cardinality }}}',
+  foo: 'bar',
+  random: '${series_id%{{ cardinality }}}',
 {% for i in range(num_labels) %}
-        label_{{ i }}: `${faker.numbers.intRange(0, {{ cardinality - 1 }})}`,
+  label_{{ i }}: '${series_id%{{ cardinality + i + 1 }}}',
 {% endfor %}
-      },
-      [remote.Sample(faker.numbers.intRange(0, 10), Date.now())],
-    ),
-  ]);
+};
+
+export default function () {
+  const res = client.storeFromTemplates(
+    0, 10,
+    Date.now(),
+    0, {{ num_metrics * cardinality }},
+    template,
+  );
   check(res, { 'insert status is 204': (r) => r.status === 204 });
 }
 {% else %}

@@ -16,12 +16,11 @@ import streamlit as st
 # Constants
 # ---------------------------------------------------------------------------
 
-K6_IMAGE = "docker.io/grafana/k6:1.7.1"
+K6_IMAGE = "quay.io/vrutkovs/k6-with-prw-extension:v2.0.0"
 K6_INSERT_POD = "breaking-bench-k6-insert"
 K6_SELECT_POD = "breaking-bench-k6-select"
-K6_OPERATOR_BUNDLE = (
-    "https://raw.githubusercontent.com/grafana/k6-operator/main/bundle.yaml"
-)
+K6_OPERATOR_VERSION = "v1.6.0"
+K6_OPERATOR_BUNDLE = f"https://raw.githubusercontent.com/grafana/k6-operator/{K6_OPERATOR_VERSION}/bundle.yaml"
 
 WRITE_URL_DEFAULT = (
     "http://vminsert.192.168.1.254.nip.io/insert/0/prometheus/api/v1/write"
