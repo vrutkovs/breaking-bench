@@ -20,7 +20,7 @@ K6_IMAGE = "docker.io/grafana/k6:1.7.1"
 K6_INSERT_POD = "breaking-bench-k6-insert"
 K6_SELECT_POD = "breaking-bench-k6-select"
 K6_OPERATOR_BUNDLE = (
-    "https://github.com/grafana/k6-operator/releases/latest/download/bundle.yaml"
+    "https://raw.githubusercontent.com/grafana/k6-operator/main/bundle.yaml"
 )
 
 WRITE_URL_DEFAULT = (
