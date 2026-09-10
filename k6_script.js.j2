@@ -117,10 +117,16 @@ export function fast_query() {
 }
 
 export function slow_query() {
-  const now = Date.now();
-  // 10 minutes ago
-  const start = Math.floor((now - 10 * 60 * 1000) / 1000);
-  const end = Math.floor(now / 1000);
+  // Random historical window (30m-4h back) instead of a fixed "last 10m"
+  // range: querying the same recent tail every iteration keeps re-reading
+  // blocks that page cache already holds warm. Reaching further back and
+  // varying the offset spreads reads across cold, evicted blocks so vmstorage
+  // actually hits disk.
+  const lookbackMinSec = 30 * 60;
+  const lookbackMaxSec = 4 * 60 * 60;
+  const offsetSec = faker.numbers.intRange(lookbackMinSec, lookbackMaxSec);
+  const end = Math.floor(Date.now() / 1000) - offsetSec;
+  const start = end - 10 * 60;
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
   const res = http.post(
     SELECT_URL,

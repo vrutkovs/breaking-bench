@@ -26,6 +26,12 @@ spec:
                 app: breaking-bench
                 mode: {{ mode }}
             topologyKey: kubernetes.io/hostname
+    nodeSelector:
+      k6: "true"
+    tolerations:
+    - key: k6
+      operator: Exists
+      effect: NoSchedule
     image: {{ image }}
     env:
     - name: WRITE_URL
@@ -44,4 +50,6 @@ spec:
       requests:
         cpu: {{ cpu_request | tojson }}
         memory: {{ memory_request | tojson }}
+      limits:
+        memory: {{ memory_limit | tojson }}
   arguments: --tag testid={{ mode }}

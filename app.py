@@ -41,14 +41,24 @@ INSERT_RPS_SLIDER_MAX = 3000
 SELECT_FAST_RPS_SLIDER_MAX = 50
 SELECT_SLOW_RPS_SLIDER_MAX = 5
 CARDINALITY_DEFAULT = 1
-CARDINALITY_SLIDER_MAX = 100
+CARDINALITY_SLIDER_MAX = 10000
 INSERT_REPLICAS_DEFAULT = 1
 SELECT_REPLICAS_DEFAULT = 1
 REPLICAS_SLIDER_MAX = 20
 INSERT_CPU_REQUEST_DEFAULT = "50m"
 INSERT_MEMORY_REQUEST_DEFAULT = "128Mi"
+INSERT_MEMORY_LIMIT_DEFAULT = "4Gi"
+# k6's storeFromTemplates buffers num_metrics*cardinality series client-side
+# per iteration; memory limit scales with that count (base + per-series cost),
+# clamped to leave headroom for other pods on the node.
+INSERT_MEMORY_BASE_MIB = 256
+INSERT_MEMORY_PER_SERIES_KIB = 64
+# k6-nodes pool (e2-highmem-4, ~28Gi allocatable) is dedicated to k6 via
+# nodeSelector/taint; leave headroom for kubelet/daemonsets.
+INSERT_MEMORY_LIMIT_MAX_MIB = 24576
 SELECT_CPU_REQUEST_DEFAULT = "50m"
 SELECT_MEMORY_REQUEST_DEFAULT = "128Mi"
+SELECT_MEMORY_LIMIT_DEFAULT = "512Mi"
 RUNTIME_K8S = "Kubernetes pod"
 
 
@@ -148,6 +158,7 @@ def build_k6_testrun_manifest(
     parallelism: int,
     cpu_request: str,
     memory_request: str,
+    memory_limit: str,
 ) -> str:
     tmpl = _JINJA_ENV.get_template(_TESTRUN_TEMPLATE_PATH.name)
     return tmpl.render(
@@ -160,13 +171,30 @@ def build_k6_testrun_manifest(
         parallelism=parallelism,
         cpu_request=cpu_request,
         memory_request=memory_request,
+        memory_limit=memory_limit,
     )
 
 
-def _resource_requests(mode: str) -> tuple[str, str]:
+def _resource_requests(mode: str, series_count: int = 0) -> tuple[str, str, str]:
+    # k6 buffers generated series client-side (storeFromTemplates), so
+    # memory scales with cardinality and is otherwise unbounded. Cap it
+    # so the pod OOMs on its own cgroup instead of starving the node.
     if mode == "insert":
-        return INSERT_CPU_REQUEST_DEFAULT, INSERT_MEMORY_REQUEST_DEFAULT
-    return SELECT_CPU_REQUEST_DEFAULT, SELECT_MEMORY_REQUEST_DEFAULT
+        floor_mib = int(INSERT_MEMORY_LIMIT_DEFAULT.rstrip("Gi")) * 1024
+        needed_mib = INSERT_MEMORY_BASE_MIB + (
+            series_count * INSERT_MEMORY_PER_SERIES_KIB
+        ) // 1024
+        limit_mib = min(max(floor_mib, needed_mib), INSERT_MEMORY_LIMIT_MAX_MIB)
+        return (
+            INSERT_CPU_REQUEST_DEFAULT,
+            INSERT_MEMORY_REQUEST_DEFAULT,
+            f"{limit_mib}Mi",
+        )
+    return (
+        SELECT_CPU_REQUEST_DEFAULT,
+        SELECT_MEMORY_REQUEST_DEFAULT,
+        SELECT_MEMORY_LIMIT_DEFAULT,
+    )
 
 
 def _script_config(
@@ -227,7 +255,10 @@ def _log_recreate(
     fast_rps: int,
     slow_rps: int | None = None,
 ) -> None:
-    cpu_request, memory_request = _resource_requests(mode)
+    series_count = num_metrics * cardinality if mode == "insert" else 0
+    cpu_request, memory_request, memory_limit = _resource_requests(
+        mode, series_count
+    )
     entry: dict[str, Any] = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "action": action,
@@ -247,6 +278,7 @@ def _log_recreate(
         "replicas": replicas,
         "cpu_request": cpu_request,
         "memory_request": memory_request,
+        "memory_limit": memory_limit,
         "fast_rps": fast_rps,
     }
     if mode == "select":
@@ -359,10 +391,13 @@ def start_k6_testrun(
     metrics_url: str,
     namespace: str,
     replicas: int,
+    series_count: int = 0,
 ) -> None:
     name = _k8s_name(mode)
     ns_args = _kubectl_namespace_args(namespace)
-    cpu_request, memory_request = _resource_requests(mode)
+    cpu_request, memory_request, memory_limit = _resource_requests(
+        mode, series_count
+    )
 
     _kubectl_delete(namespace, name, include_configmap=False)
     _kubectl_wait_deleted(namespace, "testrun", name, timeout_s=60)
@@ -376,6 +411,7 @@ def start_k6_testrun(
         replicas,
         cpu_request,
         memory_request,
+        memory_limit,
     )
     _kubectl_run(
         ["kubectl", *ns_args, "apply", "-f", "-"],
@@ -420,6 +456,7 @@ def start_k6_workload(
     metrics_url: str,
     namespace: str,
     replicas: int = 1,
+    series_count: int = 0,
 ) -> None:
     start_k6_testrun(
         mode,
@@ -429,6 +466,7 @@ def start_k6_workload(
         metrics_url,
         namespace,
         replicas,
+        series_count,
     )
     st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
     st.session_state[f"{mode}_namespace"] = namespace
@@ -483,8 +521,16 @@ def restart_k6(
         fast_rps,
         slow_rps,
     )
+    series_count = num_metrics * cardinality if mode == "insert" else 0
     start_k6_workload(
-        mode, script, write_url, select_url, metrics_url, namespace, replicas
+        mode,
+        script,
+        write_url,
+        select_url,
+        metrics_url,
+        namespace,
+        replicas,
+        series_count,
     )
     st.session_state[f"{mode}_script_config"] = _workload_config(
         RUNTIME_K8S,
@@ -613,8 +659,16 @@ def _scenario_panel(
                 fast_rps,
                 slow_rps,
             )
+            series_count = num_metrics * cardinality if mode == "insert" else 0
             start_k6_workload(
-                mode, script, write_url, select_url, metrics_url, namespace, replicas
+                mode,
+                script,
+                write_url,
+                select_url,
+                metrics_url,
+                namespace,
+                replicas,
+                series_count,
             )
             st.session_state[f"{mode}_script_config"] = script_config
             st.rerun()
@@ -763,6 +817,14 @@ def main() -> None:
             CARDINALITY_SLIDER_MAX,
             CARDINALITY_DEFAULT,
             key="cardinality",
+        )
+
+    # Defaults point at a placeholder endpoint, not any real cluster.
+    # Warn loudly instead of letting a test silently fail against it.
+    if WRITE_URL_DEFAULT in (write_url, select_url, metrics_url):
+        st.warning(
+            "URL field still set to the placeholder default — "
+            "update it to your cluster's actual ingress host before starting."
         )
 
     st.divider()
