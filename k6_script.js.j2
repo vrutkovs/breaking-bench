@@ -80,8 +80,11 @@ const client = new remote.Client({ url: WRITE_URL, timeout: '{{ insert_timeout }
 // series, remaining labels cycle at offset moduli so they diverge from one another.
 // storeFromTemplates generates + sends all series in Go, avoiding per-sample JS<->Go
 // calls that the old faker-driven remote.Timeseries()/Sample() loop required.
+// Replica name (HOSTNAME, e.g. breaking-bench-k6-insert-1) keeps series of
+// parallel k6 pods distinct instead of overwriting each other.
+const replica = (__ENV.HOSTNAME || 'local').replace(/[^a-zA-Z0-9]/g, '_');
 const template = {
-  __name__: '{{ metric_name }}_${series_id/{{ cardinality }}}',
+  __name__: '{{ metric_name }}_' + replica + '_${series_id/{{ cardinality }}}',
   foo: 'bar',
   random: '${series_id%{{ cardinality }}}',
 {% for i in range(num_labels) %}
@@ -110,7 +113,7 @@ export function fast_query() {
   const start = end - 5 * 60;
   const res = http.post(
     SELECT_URL,
-    { query: `{{ metric_name }}_${metricIdx}\{foo="bar"\}`, start: start, end: end, step: `${step}s` },
+    { query: `{__name__=~"{{ metric_name }}_.+_${metricIdx}",foo="bar"}`, start: start, end: end, step: `${step}s` },
     { timeout: '{{ select_timeout }}', responseType: 'none' },
   );
   check(res, { 'query status is 200': (r) => r.status === 200 });
@@ -130,7 +133,7 @@ export function slow_query() {
   const metricIdx = faker.numbers.intRange(0, {{ num_metrics - 1 }});
   const res = http.post(
     SELECT_URL,
-    { query: `{{ metric_name }}_${metricIdx}\{foo="bar"\}`, start: start, end: end, step: '15s' },
+    { query: `{__name__=~"{{ metric_name }}_.+_${metricIdx}",foo="bar"}`, start: start, end: end, step: '15s' },
     { timeout: '{{ select_timeout }}', responseType: 'none' },
   );
   check(res, { 'query status is 200': (r) => r.status === 200 });
