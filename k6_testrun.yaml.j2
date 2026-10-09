@@ -18,14 +18,20 @@ spec:
         mode: {{ mode }}
     affinity:
       podAntiAffinity:
-        preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          podAffinityTerm:
-            labelSelector:
-              matchLabels:
-                app: breaking-bench
-                mode: {{ mode }}
-            topologyKey: kubernetes.io/hostname
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: breaking-bench
+              mode: {{ mode }}
+          topologyKey: kubernetes.io/hostname
+        - labelSelector:
+            matchLabels:
+              app: breaking-bench
+            matchExpressions:
+            - key: mode
+              operator: NotIn
+              values: [{{ mode }}]
+          topologyKey: kubernetes.io/hostname
     nodeSelector:
       k6: "true"
     tolerations:
