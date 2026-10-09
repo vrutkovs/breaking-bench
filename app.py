@@ -45,8 +45,8 @@ CARDINALITY_SLIDER_MAX = 1500
 INSERT_REPLICAS_DEFAULT = 1
 SELECT_REPLICAS_DEFAULT = 1
 REPLICAS_SLIDER_MAX = 20
-INSERT_CPU_REQUEST_DEFAULT = "50m"
-INSERT_MEMORY_REQUEST_DEFAULT = "128Mi"
+INSERT_CPU_REQUEST_DEFAULT = "2"
+INSERT_MEMORY_REQUEST_DEFAULT = "3Gi"
 INSERT_MEMORY_LIMIT_DEFAULT = "4Gi"
 # k6's storeFromTemplates buffers num_metrics*cardinality series client-side
 # per iteration; memory limit scales with that count (base + per-series cost),
@@ -56,9 +56,9 @@ INSERT_MEMORY_PER_SERIES_KIB = 64
 # k6-nodes pool (e2-highmem-4, ~28Gi allocatable) is dedicated to k6 via
 # nodeSelector/taint; leave headroom for kubelet/daemonsets.
 INSERT_MEMORY_LIMIT_MAX_MIB = 24576
-SELECT_CPU_REQUEST_DEFAULT = "50m"
-SELECT_MEMORY_REQUEST_DEFAULT = "128Mi"
-SELECT_MEMORY_LIMIT_DEFAULT = "512Mi"
+SELECT_CPU_REQUEST_DEFAULT = "2"
+SELECT_MEMORY_REQUEST_DEFAULT = "3Gi"
+SELECT_MEMORY_LIMIT_DEFAULT = "4Gi"
 RUNTIME_K8S = "Kubernetes pod"
 
 
