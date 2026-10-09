@@ -1,1 +1,1 @@
-uv run streamlit run app.py -- --k8s-namespace default
+uv run streamlit run app.py -- --k8s-namespace vm-load-baseline-vvvmyc

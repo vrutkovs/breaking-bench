@@ -42,6 +42,8 @@ SELECT_FAST_RPS_SLIDER_MAX = 50
 SELECT_SLOW_RPS_SLIDER_MAX = 5
 CARDINALITY_DEFAULT = 1
 CARDINALITY_SLIDER_MAX = 1500
+CHURN_RATE_DEFAULT = 0
+CHURN_RATE_SLIDER_MAX = 10000
 INSERT_REPLICAS_DEFAULT = 1
 SELECT_REPLICAS_DEFAULT = 1
 REPLICAS_SLIDER_MAX = 20
@@ -121,6 +123,7 @@ def build_k6_script(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    churn_rate: int,
     insert_timeout: str,
     select_timeout: str,
     replicas: int,
@@ -129,6 +132,12 @@ def build_k6_script(
 ) -> str:
     fast_rps = fast_rps if fast_rps else 1
     slow_rps = (slow_rps if slow_rps is not None else fast_rps) or 1
+    # Every series gets a new `churn` label value each period, so the whole
+    # series set is replaced `churn_rate` times per second on average across
+    # all replicas. E.g. 1000 series x 2 replicas at churn 100/s -> new set every 20s.
+    churn_period_s = 0
+    if mode == "insert" and churn_rate > 0:
+        churn_period_s = max(1, num_metrics * cardinality * replicas // churn_rate)
     tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
     return tmpl.render(
         mode=mode,
@@ -139,6 +148,8 @@ def build_k6_script(
         num_metrics=num_metrics,
         num_labels=num_labels,
         cardinality=cardinality,
+        churn_rate=churn_rate,
+        churn_period_s=churn_period_s,
         insert_timeout=insert_timeout,
         select_timeout=select_timeout,
         fast_rps=fast_rps,
@@ -213,6 +224,7 @@ def _workload_config(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    churn_rate: int,
     insert_timeout: str,
     select_timeout: str,
     replicas: int,
@@ -229,6 +241,7 @@ def _workload_config(
         num_metrics,
         num_labels,
         cardinality,
+        churn_rate,
         insert_timeout,
         select_timeout,
         replicas,
@@ -249,6 +262,7 @@ def _log_recreate(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    churn_rate: int,
     insert_timeout: str,
     select_timeout: str,
     replicas: int,
@@ -272,6 +286,7 @@ def _log_recreate(
         "metric_variants": num_metrics,
         "extra_labels": num_labels,
         "cardinality": cardinality,
+        "churn_rate": churn_rate,
         "insert_timeout": insert_timeout,
         "select_timeout": select_timeout,
         "max_vus": MAX_VUS,
@@ -482,6 +497,7 @@ def restart_k6(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    churn_rate: int,
     insert_timeout: str,
     select_timeout: str,
     replicas: int,
@@ -497,6 +513,7 @@ def restart_k6(
         num_metrics,
         num_labels,
         cardinality,
+        churn_rate,
         insert_timeout,
         select_timeout,
         replicas,
@@ -515,6 +532,7 @@ def restart_k6(
         num_metrics,
         num_labels,
         cardinality,
+        churn_rate,
         insert_timeout,
         select_timeout,
         replicas,
@@ -542,6 +560,7 @@ def restart_k6(
         num_metrics,
         num_labels,
         cardinality,
+        churn_rate,
         insert_timeout,
         select_timeout,
         replicas,
@@ -567,6 +586,7 @@ def _scenario_panel(
     num_metrics: int,
     num_labels: int,
     cardinality: int,
+    churn_rate: int,
     insert_timeout: str,
     select_timeout: str,
     replicas: int,
@@ -593,6 +613,7 @@ def _scenario_panel(
         num_metrics,
         num_labels,
         cardinality,
+        churn_rate,
         insert_timeout,
         select_timeout,
         replicas,
@@ -614,6 +635,7 @@ def _scenario_panel(
             num_metrics,
             num_labels,
             cardinality,
+            churn_rate,
             insert_timeout,
             select_timeout,
             replicas,
@@ -635,6 +657,7 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 cardinality,
+                churn_rate,
                 insert_timeout,
                 select_timeout,
                 replicas,
@@ -653,6 +676,7 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 cardinality,
+                churn_rate,
                 insert_timeout,
                 select_timeout,
                 replicas,
@@ -684,6 +708,7 @@ def _scenario_panel(
                 num_metrics,
                 num_labels,
                 cardinality,
+                churn_rate,
                 insert_timeout,
                 select_timeout,
                 replicas,
@@ -818,6 +843,13 @@ def main() -> None:
             CARDINALITY_DEFAULT,
             key="cardinality",
         )
+        churn_rate = st.slider(
+            "Series churn rate (new series/s, 0 = off)",
+            0,
+            CHURN_RATE_SLIDER_MAX,
+            CHURN_RATE_DEFAULT,
+            key="churn_rate",
+        )
 
     # Defaults point at a placeholder endpoint, not any real cluster.
     # Warn loudly instead of letting a test silently fail against it.
@@ -864,6 +896,7 @@ def main() -> None:
             num_metrics,
             num_labels,
             cardinality,
+            churn_rate,
             insert_timeout,
             select_timeout,
             insert_replicas,
@@ -881,6 +914,7 @@ def main() -> None:
             num_metrics,
             num_labels,
             cardinality,
+            churn_rate,
             insert_timeout,
             select_timeout,
             select_replicas,

@@ -67,6 +67,7 @@ export function setup() {
         num_metrics: '{{ num_metrics }}',
         num_labels: '{{ num_labels }}',
         cardinality: '{{ cardinality }}',
+        churn_rate: '{{ churn_rate }}',
       },
       [remote.Sample(1, Date.now())],
     ),
@@ -92,12 +93,22 @@ const template = {
 {% endfor %}
 };
 
+{% if churn_period_s > 0 %}
+// Series churn: the `churn` label changes every period, replacing all series.
+// Derived from wall-clock time so all replicas switch together.
+const churnPeriodMs = {{ churn_period_s * 1000 }};
+
+{% endif %}
 export default function () {
   const res = client.storeFromTemplates(
     0, 10,
     Date.now(),
     0, {{ num_metrics * cardinality }},
+{% if churn_period_s > 0 %}
+    { ...template, churn: String(Math.floor(Date.now() / churnPeriodMs)) },
+{% else %}
     template,
+{% endif %}
   );
   check(res, { 'insert status is 204': (r) => r.status === 204 });
 }
