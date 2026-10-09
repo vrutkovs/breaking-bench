@@ -46,6 +46,14 @@ spec:
       value: "p(99),p(95),avg,sum"
     - name: K6_OUT
       value: "experimental-prometheus-rw"
+    # k6-operator always injects a liveness probe (/v1/status, 1s timeout), which
+    # kills busy runners. Cannot be removed, so use a TCP check that effectively never fails.
+    livenessProbe:
+      tcpSocket:
+        port: 6565
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 100
     resources:
       requests:
         cpu: {{ cpu_request | tojson }}
