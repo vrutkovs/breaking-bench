@@ -6,6 +6,7 @@ import argparse
 import subprocess
 import tempfile
 import time
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -114,86 +115,95 @@ _JINJA_ENV = jinja2.Environment(
 )
 
 
-def build_k6_script(
-    mode: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    metric_name: str,
-    num_metrics: int,
-    num_labels: int,
-    cardinality: int,
-    churn_rate: int,
-    insert_timeout: str,
-    select_timeout: str,
-    replicas: int,
-    fast_rps: int,
-    slow_rps: int | None = None,
-) -> str:
-    fast_rps = fast_rps if fast_rps else 1
-    slow_rps = (slow_rps if slow_rps is not None else fast_rps) or 1
+@dataclass(frozen=True)
+class Endpoints:
+    write_url: str
+    select_url: str
+    metrics_url: str
+
+
+@dataclass(frozen=True)
+class Series:
+    """Shape of generated series."""
+
+    metric_name: str
+    num_metrics: int
+    num_labels: int
+    cardinality: int
+    churn_rate: int
+
+    @property
+    def count(self) -> int:
+        return self.num_metrics * self.cardinality
+
+
+@dataclass(frozen=True)
+class Workload:
+    """Everything needed to render and run one k6 TestRun.
+
+    Settings changes of a running workload are detected by comparing asdict()
+    copies: Streamlit re-executes this module on every rerun, so instances kept
+    in session_state belong to a stale class and never compare equal.
+    """
+
+    mode: str
+    namespace: str
+    endpoints: Endpoints
+    series: Series
+    insert_timeout: str
+    select_timeout: str
+    replicas: int
+    fast_rps: int
+    slow_rps: int | None = None
+
+    @property
+    def name(self) -> str:
+        return _k8s_name(self.mode)
+
+    @property
+    def series_count(self) -> int:
+        return self.series.count if self.mode == "insert" else 0
+
+
+def build_k6_script(w: Workload) -> str:
+    fast_rps = w.fast_rps if w.fast_rps else 1
+    slow_rps = (w.slow_rps if w.slow_rps is not None else fast_rps) or 1
     # Every series gets a new `churn` label value each period, so the whole
     # series set is replaced `churn_rate` times per second on average across
     # all replicas. E.g. 1000 series x 2 replicas at churn 100/s -> new set every 20s.
     churn_period_s = 0
-    if mode == "insert" and churn_rate > 0:
-        churn_period_s = max(1, num_metrics * cardinality * replicas // churn_rate)
+    if w.mode == "insert" and w.series.churn_rate > 0:
+        churn_period_s = max(1, w.series.count * w.replicas // w.series.churn_rate)
     tmpl = _JINJA_ENV.get_template(_TEMPLATE_PATH.name)
     return tmpl.render(
-        mode=mode,
-        write_url=write_url,
-        select_url=select_url,
-        metrics_url=metrics_url,
-        metric_name=metric_name,
-        num_metrics=num_metrics,
-        num_labels=num_labels,
-        cardinality=cardinality,
-        churn_rate=churn_rate,
+        mode=w.mode,
+        write_url=w.endpoints.write_url,
+        select_url=w.endpoints.select_url,
+        metrics_url=w.endpoints.metrics_url,
+        metric_name=w.series.metric_name,
+        num_metrics=w.series.num_metrics,
+        num_labels=w.series.num_labels,
+        cardinality=w.series.cardinality,
+        churn_rate=w.series.churn_rate,
         churn_period_s=churn_period_s,
-        insert_timeout=insert_timeout,
-        select_timeout=select_timeout,
+        insert_timeout=w.insert_timeout,
+        select_timeout=w.select_timeout,
         fast_rps=fast_rps,
         slow_rps=slow_rps,
-        maxVUs=MAX_VUS * replicas,
-        fastMaxVUs=MAX_VUS * replicas,
-        slowMaxVUs=MAX_VUS * replicas,
+        maxVUs=MAX_VUS * w.replicas,
+        fastMaxVUs=MAX_VUS * w.replicas,
+        slowMaxVUs=MAX_VUS * w.replicas,
     )
 
 
-def build_k6_testrun_manifest(
-    mode: str,
-    name: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    parallelism: int,
-    cpu_request: str,
-    memory_request: str,
-    memory_limit: str,
-) -> str:
-    tmpl = _JINJA_ENV.get_template(_TESTRUN_TEMPLATE_PATH.name)
-    return tmpl.render(
-        mode=mode,
-        name=name,
-        image=K6_IMAGE,
-        write_url=write_url,
-        select_url=select_url,
-        metrics_url=metrics_url,
-        parallelism=parallelism,
-        cpu_request=cpu_request,
-        memory_request=memory_request,
-        memory_limit=memory_limit,
-    )
-
-
-def _resource_requests(mode: str, series_count: int = 0) -> tuple[str, str, str]:
+def _resource_requests(w: Workload) -> tuple[str, str, str]:
     # k6 buffers generated series client-side (storeFromTemplates), so
     # memory scales with cardinality and is otherwise unbounded. Cap it
     # so the pod OOMs on its own cgroup instead of starving the node.
-    if mode == "insert":
+    if w.mode == "insert":
         floor_mib = int(INSERT_MEMORY_LIMIT_DEFAULT.rstrip("Gi")) * 1024
         needed_mib = INSERT_MEMORY_BASE_MIB + (
-            series_count * INSERT_MEMORY_PER_SERIES_KIB
+            w.series_count * INSERT_MEMORY_PER_SERIES_KIB
         ) // 1024
         limit_mib = min(max(floor_mib, needed_mib), INSERT_MEMORY_LIMIT_MAX_MIB)
         return (
@@ -208,97 +218,51 @@ def _resource_requests(mode: str, series_count: int = 0) -> tuple[str, str, str]
     )
 
 
-def _script_config(
-    metric_name: str, num_metrics: int, num_labels: int
-) -> tuple[str, int, int]:
-    return metric_name, num_metrics, num_labels
-
-
-def _workload_config(
-    runtime: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    namespace: str,
-    metric_name: str,
-    num_metrics: int,
-    num_labels: int,
-    cardinality: int,
-    churn_rate: int,
-    insert_timeout: str,
-    select_timeout: str,
-    replicas: int,
-    fast_rps: int,
-    slow_rps: int | None = None,
-) -> tuple[Any, ...]:
-    return (
-        runtime,
-        namespace,
-        write_url,
-        select_url,
-        metrics_url,
-        metric_name,
-        num_metrics,
-        num_labels,
-        cardinality,
-        churn_rate,
-        insert_timeout,
-        select_timeout,
-        replicas,
-        fast_rps,
-        slow_rps,
+def build_k6_testrun_manifest(w: Workload) -> str:
+    cpu_request, memory_request, memory_limit = _resource_requests(w)
+    tmpl = _JINJA_ENV.get_template(_TESTRUN_TEMPLATE_PATH.name)
+    return tmpl.render(
+        mode=w.mode,
+        name=w.name,
+        image=K6_IMAGE,
+        write_url=w.endpoints.write_url,
+        select_url=w.endpoints.select_url,
+        metrics_url=w.endpoints.metrics_url,
+        parallelism=w.replicas,
+        cpu_request=cpu_request,
+        memory_request=memory_request,
+        memory_limit=memory_limit,
     )
 
 
-def _log_recreate(
-    action: str,
-    runtime: str,
-    mode: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    namespace: str,
-    metric_name: str,
-    num_metrics: int,
-    num_labels: int,
-    cardinality: int,
-    churn_rate: int,
-    insert_timeout: str,
-    select_timeout: str,
-    replicas: int,
-    fast_rps: int,
-    slow_rps: int | None = None,
-) -> None:
-    series_count = num_metrics * cardinality if mode == "insert" else 0
-    cpu_request, memory_request, memory_limit = _resource_requests(
-        mode, series_count
-    )
+def _log_recreate(action: str, w: Workload) -> None:
+    cpu_request, memory_request, memory_limit = _resource_requests(w)
     entry: dict[str, Any] = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "action": action,
-        "runtime": runtime,
-        "mode": mode,
-        "namespace": namespace,
-        "write_url": write_url,
-        "select_url": select_url,
-        "metrics_url": metrics_url,
-        "metric_name": metric_name,
-        "metric_variants": num_metrics,
-        "extra_labels": num_labels,
-        "cardinality": cardinality,
-        "churn_rate": churn_rate,
-        "insert_timeout": insert_timeout,
-        "select_timeout": select_timeout,
+        "runtime": RUNTIME_K8S,
+        "mode": w.mode,
+        "namespace": w.namespace,
+        "write_url": w.endpoints.write_url,
+        "select_url": w.endpoints.select_url,
+        "metrics_url": w.endpoints.metrics_url,
+        "metric_name": w.series.metric_name,
+        "metric_variants": w.series.num_metrics,
+        "extra_labels": w.series.num_labels,
+        "cardinality": w.series.cardinality,
+        "churn_rate": w.series.churn_rate,
+        "insert_timeout": w.insert_timeout,
+        "select_timeout": w.select_timeout,
         "max_vus": MAX_VUS,
-        "replicas": replicas,
+        "replicas": w.replicas,
         "cpu_request": cpu_request,
         "memory_request": memory_request,
         "memory_limit": memory_limit,
-        "fast_rps": fast_rps,
+        "fast_rps": w.fast_rps,
     }
-    if mode == "select":
-        entry["slow_rps"] = slow_rps
-    key = f"{mode}_recreate_logs"
+    if w.mode == "select":
+        entry["slow_rps"] = w.slow_rps
+    key = f"{w.mode}_recreate_logs"
     logs = list(st.session_state.get(key, []))
     logs.append(entry)
     st.session_state[key] = logs[-5:]
@@ -398,43 +362,20 @@ def _apply_script_configmap(namespace: str, name: str, script: str) -> None:
         Path(tmp.name).unlink(missing_ok=True)
 
 
-def start_k6_testrun(
-    mode: str,
-    script: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    namespace: str,
-    replicas: int,
-    series_count: int = 0,
-) -> None:
-    name = _k8s_name(mode)
-    ns_args = _kubectl_namespace_args(namespace)
-    cpu_request, memory_request, memory_limit = _resource_requests(
-        mode, series_count
-    )
+def start_k6_testrun(w: Workload, script: str) -> None:
+    name = w.name
+    ns_args = _kubectl_namespace_args(w.namespace)
 
-    _kubectl_delete(namespace, name, include_configmap=False)
-    _kubectl_wait_deleted(namespace, "testrun", name, timeout_s=60)
-    _apply_script_configmap(namespace, name, script)
-    manifest = build_k6_testrun_manifest(
-        mode,
-        name,
-        write_url,
-        select_url,
-        metrics_url,
-        replicas,
-        cpu_request,
-        memory_request,
-        memory_limit,
-    )
+    _kubectl_delete(w.namespace, name, include_configmap=False)
+    _kubectl_wait_deleted(w.namespace, "testrun", name, timeout_s=60)
+    _apply_script_configmap(w.namespace, name, script)
     _kubectl_run(
         ["kubectl", *ns_args, "apply", "-f", "-"],
-        input_data=manifest.encode(),
+        input_data=build_k6_testrun_manifest(w).encode(),
     )
-    st.session_state[f"{mode}_running"] = True
-    st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
-    st.session_state[f"{mode}_namespace"] = namespace
+    st.session_state[f"{w.mode}_running"] = True
+    st.session_state[f"{w.mode}_runtime"] = RUNTIME_K8S
+    st.session_state[f"{w.mode}_namespace"] = w.namespace
 
 
 def stop_k6_testrun(mode: str, namespace: str) -> None:
@@ -463,258 +404,47 @@ def get_k6_testrun_stage(mode: str, namespace: str) -> str | None:
     return proc.stdout or None
 
 
-def start_k6_workload(
-    mode: str,
-    script: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    namespace: str,
-    replicas: int = 1,
-    series_count: int = 0,
-) -> None:
-    start_k6_testrun(
-        mode,
-        script,
-        write_url,
-        select_url,
-        metrics_url,
-        namespace,
-        replicas,
-        series_count,
-    )
-    st.session_state[f"{mode}_runtime"] = RUNTIME_K8S
-    st.session_state[f"{mode}_namespace"] = namespace
 
-
-def restart_k6(
-    mode: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    namespace: str,
-    metric_name: str,
-    num_metrics: int,
-    num_labels: int,
-    cardinality: int,
-    churn_rate: int,
-    insert_timeout: str,
-    select_timeout: str,
-    replicas: int,
-    fast_rps: int,
-    slow_rps: int | None = None,
-) -> None:
-    script = build_k6_script(
-        mode,
-        write_url,
-        select_url,
-        metrics_url,
-        metric_name,
-        num_metrics,
-        num_labels,
-        cardinality,
-        churn_rate,
-        insert_timeout,
-        select_timeout,
-        replicas,
-        fast_rps,
-        slow_rps,
-    )
-    _log_recreate(
-        "recreate",
-        RUNTIME_K8S,
-        mode,
-        write_url,
-        select_url,
-        metrics_url,
-        namespace,
-        metric_name,
-        num_metrics,
-        num_labels,
-        cardinality,
-        churn_rate,
-        insert_timeout,
-        select_timeout,
-        replicas,
-        fast_rps,
-        slow_rps,
-    )
-    series_count = num_metrics * cardinality if mode == "insert" else 0
-    start_k6_workload(
-        mode,
-        script,
-        write_url,
-        select_url,
-        metrics_url,
-        namespace,
-        replicas,
-        series_count,
-    )
-    st.session_state[f"{mode}_script_config"] = _workload_config(
-        RUNTIME_K8S,
-        write_url,
-        select_url,
-        metrics_url,
-        namespace,
-        metric_name,
-        num_metrics,
-        num_labels,
-        cardinality,
-        churn_rate,
-        insert_timeout,
-        select_timeout,
-        replicas,
-        fast_rps,
-        slow_rps,
-    )
-
-
-def stop_k6_workload(mode: str, namespace: str) -> None:
-    stop_k6_testrun(mode, namespace)
+def restart_k6(w: Workload) -> None:
+    script = build_k6_script(w)
+    _log_recreate("recreate", w)
+    start_k6_testrun(w, script)
+    st.session_state[f"{w.mode}_script_config"] = asdict(w)
 
 
 # ---------------------------------------------------------------------------
 # UI helpers
 # ---------------------------------------------------------------------------
-def _scenario_panel(
-    mode: str,
-    write_url: str,
-    select_url: str,
-    metrics_url: str,
-    namespace: str,
-    metric_name: str,
-    num_metrics: int,
-    num_labels: int,
-    cardinality: int,
-    churn_rate: int,
-    insert_timeout: str,
-    select_timeout: str,
-    replicas: int,
-    fast_rps: int,
-    slow_rps: int | None = None,
-) -> None:
+def _scenario_panel(w: Workload) -> None:
+    mode = w.mode
     running: bool = st.session_state.get(f"{mode}_running", False)
 
     if not running:
-        stage = get_k6_testrun_stage(mode, namespace)
+        stage = get_k6_testrun_stage(mode, w.namespace)
         if stage and stage not in ("finished", "error"):
             running = True
             st.session_state[f"{mode}_running"] = True
-            st.session_state[f"{mode}_namespace"] = namespace
+            st.session_state[f"{mode}_namespace"] = w.namespace
 
-    active_namespace: str = st.session_state.get(f"{mode}_namespace", namespace)
-    script_config = _workload_config(
-        RUNTIME_K8S,
-        write_url,
-        select_url,
-        metrics_url,
-        active_namespace,
-        metric_name,
-        num_metrics,
-        num_labels,
-        cardinality,
-        churn_rate,
-        insert_timeout,
-        select_timeout,
-        replicas,
-        fast_rps,
-        slow_rps,
-    )
+    # A running workload keeps the namespace it was started in.
+    active = replace(w, namespace=st.session_state.get(f"{mode}_namespace", w.namespace))
     if running and st.session_state.get(f"{mode}_script_config") is None:
-        st.session_state[f"{mode}_script_config"] = script_config
+        st.session_state[f"{mode}_script_config"] = asdict(active)
 
     if not running:
-        active_namespace = namespace
-        script_config = _workload_config(
-            RUNTIME_K8S,
-            write_url,
-            select_url,
-            metrics_url,
-            namespace,
-            metric_name,
-            num_metrics,
-            num_labels,
-            cardinality,
-            churn_rate,
-            insert_timeout,
-            select_timeout,
-            replicas,
-            fast_rps,
-            slow_rps,
-        )
         if st.button(
             f"Start {mode}",
             type="primary",
             use_container_width=True,
             key=f"start_{mode}",
         ):
-            script = build_k6_script(
-                mode,
-                write_url,
-                select_url,
-                metrics_url,
-                metric_name,
-                num_metrics,
-                num_labels,
-                cardinality,
-                churn_rate,
-                insert_timeout,
-                select_timeout,
-                replicas,
-                fast_rps,
-                slow_rps,
-            )
-            _log_recreate(
-                "start",
-                RUNTIME_K8S,
-                mode,
-                write_url,
-                select_url,
-                metrics_url,
-                namespace,
-                metric_name,
-                num_metrics,
-                num_labels,
-                cardinality,
-                churn_rate,
-                insert_timeout,
-                select_timeout,
-                replicas,
-                fast_rps,
-                slow_rps,
-            )
-            series_count = num_metrics * cardinality if mode == "insert" else 0
-            start_k6_workload(
-                mode,
-                script,
-                write_url,
-                select_url,
-                metrics_url,
-                namespace,
-                replicas,
-                series_count,
-            )
-            st.session_state[f"{mode}_script_config"] = script_config
+            _log_recreate("start", w)
+            start_k6_testrun(w, build_k6_script(w))
+            st.session_state[f"{mode}_script_config"] = asdict(w)
             st.rerun()
     else:
-        if st.session_state.get(f"{mode}_script_config") != script_config:
-            restart_k6(
-                mode,
-                write_url,
-                select_url,
-                metrics_url,
-                active_namespace,
-                metric_name,
-                num_metrics,
-                num_labels,
-                cardinality,
-                churn_rate,
-                insert_timeout,
-                select_timeout,
-                replicas,
-                fast_rps,
-                slow_rps,
-            )
+        if st.session_state.get(f"{mode}_script_config") != asdict(active):
+            restart_k6(active)
             st.info(f"{mode} restarted with updated parameters")
             st.rerun()
 
@@ -725,10 +455,10 @@ def _scenario_panel(
             use_container_width=True,
             key=f"stop_{mode}",
         ):
-            stop_k6_workload(mode, active_namespace)
+            stop_k6_testrun(mode, active.namespace)
             st.rerun()
 
-        stage = get_k6_testrun_stage(mode, active_namespace)
+        stage = get_k6_testrun_stage(mode, active.namespace)
         st.caption(f"TestRun stage: {stage or 'not found'}")
 
         recreate_logs = st.session_state.get(f"{mode}_recreate_logs", [])
@@ -880,47 +610,40 @@ def main() -> None:
             select_slow_rps,
         ) = _scenario_settings("select")
 
+    endpoints = Endpoints(write_url, select_url, metrics_url)
+    series = Series(metric_name, num_metrics, num_labels, cardinality, churn_rate)
+    insert = Workload(
+        "insert",
+        K8S_NAMESPACE,
+        endpoints,
+        series,
+        insert_timeout,
+        select_timeout,
+        insert_replicas,
+        insert_rps,
+    )
+    select = Workload(
+        "select",
+        K8S_NAMESPACE,
+        endpoints,
+        series,
+        insert_timeout,
+        select_timeout,
+        select_replicas,
+        select_fast_rps,
+        select_slow_rps,
+    )
+
     # --- Sidebar: buttons and status ---
     with st.sidebar:
         st.caption(f"Runner: {RUNTIME}")
         st.caption(f"Namespace: {K8S_NAMESPACE}")
         st.divider()
         st.subheader("Insert")
-        _scenario_panel(
-            "insert",
-            write_url,
-            select_url,
-            metrics_url,
-            K8S_NAMESPACE,
-            metric_name,
-            num_metrics,
-            num_labels,
-            cardinality,
-            churn_rate,
-            insert_timeout,
-            select_timeout,
-            insert_replicas,
-            insert_rps,
-        )
+        _scenario_panel(insert)
         st.divider()
         st.subheader("Select")
-        _scenario_panel(
-            "select",
-            write_url,
-            select_url,
-            metrics_url,
-            K8S_NAMESPACE,
-            metric_name,
-            num_metrics,
-            num_labels,
-            cardinality,
-            churn_rate,
-            insert_timeout,
-            select_timeout,
-            select_replicas,
-            select_fast_rps,
-            select_slow_rps,
-        )
+        _scenario_panel(select)
 
     if st.session_state.get("insert_running") or st.session_state.get("select_running"):
         time.sleep(2)
@@ -929,3 +652,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
