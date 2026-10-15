@@ -32,12 +32,6 @@ spec:
               operator: NotIn
               values: [{{ mode }}]
           topologyKey: kubernetes.io/hostname
-    nodeSelector:
-      k6: "true"
-    tolerations:
-    - key: k6
-      operator: Exists
-      effect: NoSchedule
     image: {{ image }}
     env:
     - name: WRITE_URL
