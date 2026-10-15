@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import tempfile
 import time
@@ -48,9 +49,9 @@ CHURN_RATE_SLIDER_MAX = 10000
 INSERT_REPLICAS_DEFAULT = 1
 SELECT_REPLICAS_DEFAULT = 1
 REPLICAS_SLIDER_MAX = 20
-INSERT_CPU_REQUEST_DEFAULT = "2"
-INSERT_MEMORY_REQUEST_DEFAULT = "3Gi"
-INSERT_MEMORY_LIMIT_DEFAULT = "4Gi"
+INSERT_CPU_REQUEST_DEFAULT = "1"
+INSERT_MEMORY_REQUEST_DEFAULT = "1Gi"
+INSERT_MEMORY_LIMIT_DEFAULT = "1Gi"
 # k6's storeFromTemplates buffers num_metrics*cardinality series client-side
 # per iteration; memory limit scales with that count (base + per-series cost),
 # clamped to leave headroom for other pods on the node.
@@ -59,10 +60,41 @@ INSERT_MEMORY_PER_SERIES_KIB = 64
 # k6-nodes pool (e2-highmem-4, ~28Gi allocatable) is dedicated to k6 via
 # nodeSelector/taint; leave headroom for kubelet/daemonsets.
 INSERT_MEMORY_LIMIT_MAX_MIB = 24576
-SELECT_CPU_REQUEST_DEFAULT = "2"
-SELECT_MEMORY_REQUEST_DEFAULT = "3Gi"
-SELECT_MEMORY_LIMIT_DEFAULT = "4Gi"
+SELECT_CPU_REQUEST_DEFAULT = "1"
+SELECT_MEMORY_REQUEST_DEFAULT = "1Gi"
+SELECT_MEMORY_LIMIT_DEFAULT = "1Gi"
 RUNTIME_K8S = "Kubernetes pod"
+
+
+def _node_selector(value: str) -> dict[str, str]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+    ):
+        raise argparse.ArgumentTypeError("expected a JSON object of string labels")
+    return parsed
+
+
+def _tolerations(value: str) -> list[dict[str, str | int]]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
+    if not isinstance(parsed, list) or not all(
+        isinstance(item, dict)
+        and all(
+            key in {"key", "operator", "value", "effect", "tolerationSeconds"}
+            and (isinstance(field, int) and not isinstance(field, bool)
+                 if key == "tolerationSeconds" else isinstance(field, str))
+            for key, field in item.items()
+        )
+        for item in parsed
+    ):
+        raise argparse.ArgumentTypeError("expected a JSON list of Kubernetes tolerations")
+    return parsed
 
 
 def _parse_args() -> argparse.Namespace:
@@ -72,12 +104,22 @@ def _parse_args() -> argparse.Namespace:
         default="default",
         help="Kubernetes namespace for k6 pods",
     )
+    parser.add_argument(
+        "--k6-node-selector", type=_node_selector, default={},
+        help='JSON map of labels for k6 runner nodes (e.g. {"pool":"load"})',
+    )
+    parser.add_argument(
+        "--k6-tolerations", type=_tolerations, default=[],
+        help="JSON list of Kubernetes tolerations for k6 runner pods",
+    )
     return parser.parse_args()
 
 
 ARGS = _parse_args()
 RUNTIME = RUNTIME_K8S
 K8S_NAMESPACE = ARGS.k8s_namespace
+K6_NODE_SELECTOR = ARGS.k6_node_selector
+K6_TOLERATIONS = ARGS.k6_tolerations
 
 # ---------------------------------------------------------------------------
 # Session state helpers
@@ -229,6 +271,8 @@ def build_k6_testrun_manifest(w: Workload) -> str:
         select_url=w.endpoints.select_url,
         metrics_url=w.endpoints.metrics_url,
         parallelism=w.replicas,
+        node_selector=K6_NODE_SELECTOR,
+        tolerations=K6_TOLERATIONS,
         cpu_request=cpu_request,
         memory_request=memory_request,
         memory_limit=memory_limit,
@@ -652,4 +696,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

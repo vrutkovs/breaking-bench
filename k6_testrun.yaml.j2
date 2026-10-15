@@ -32,6 +32,20 @@ spec:
               operator: NotIn
               values: [{{ mode }}]
           topologyKey: kubernetes.io/hostname
+{% if node_selector %}
+    nodeSelector:
+{% for key, value in node_selector.items() %}
+      {{ key | tojson }}: {{ value | tojson }}
+{% endfor %}
+{% endif %}
+{% if tolerations %}
+    tolerations:
+{% for toleration in tolerations %}
+{% for key, value in toleration.items() %}
+    {{ "- " if loop.first else "  " }}{{ key }}: {{ value | tojson }}
+{% endfor %}
+{% endfor %}
+{% endif %}
     image: {{ image }}
     env:
     - name: WRITE_URL

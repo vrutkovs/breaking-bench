@@ -52,12 +52,27 @@ uv run streamlit run app.py -- --runtime k8s --k8s-namespace default
 uv run streamlit run app.py -- --runtime podman
 ```
 
+To schedule k6 runner pods on a specific node pool, pass a JSON node selector
+and tolerations after `--`:
+
+```bash
+uv run streamlit run app.py -- \
+  --k6-node-selector '{"node-pool":"load"}' \
+  --k6-tolerations '[{"key":"dedicated","operator":"Equal","value":"load","effect":"NoSchedule"}]'
+```
+
+Both flags are optional. When omitted, the generated TestRun has no
+`runner.nodeSelector` or `runner.tolerations`. Scheduling flags apply to both
+insert and select runners; the Kubernetes operator's own pods are unchanged.
+
 ## Configuration
 
 Sidebar fields:
 
 - `Runner`: configured with `--runtime k8s` or `--runtime podman`. Default is `k8s`.
 - `Kubernetes namespace`: configured with `--k8s-namespace`. Default is `default`.
+- `k6 node selector`: configured with `--k6-node-selector` (JSON map of string labels).
+- `k6 tolerations`: configured with `--k6-tolerations` (JSON list of Kubernetes toleration objects).
 - `Write URL`: VictoriaMetrics Prometheus remote write endpoint, for example `/insert/0/prometheus/api/v1/write`.
 - `Select URL`: VictoriaMetrics query range endpoint, for example `/select/0/prometheus/api/v1/query_range`.
 - `Metrics URL`: Prometheus remote write endpoint for k6 internal metrics and `breaking_bench_config`. Defaults to same value as `Write URL`. Set to a separate VictoriaMetrics instance to keep benchmark telemetry isolated from test data.
